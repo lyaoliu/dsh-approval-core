@@ -7,10 +7,11 @@
  * 设计目标：最小人工介入。人工只出现在两类场景：
  *   1. 必须人工确认：DENY 危险词、硬风险类别（deletion/credential/remote/system/bulk）
  *   2. 中立操作（neutral）：前 N-1 次人工确认；阈值状态按「指纹命中 → flash 第三方同类验证 → 人工」分流：
- *      指纹命中（确认样本）→ 自动放行并沉淀规则（{tool,mode,category,contains}）
- *      指纹未命中但有样本 → flash 语义判断是否与确认样本同类（SAME 放行 / DIFFERENT 人工）
+ *      指纹命中（确认样本）→ 自动放行（学习沉淀只写 learning.json，不污染 allowRules 主表）
+ *      指纹未命中但有样本 → flash 语义判断是否与确认样本同类（SAME 放行并沉淀指纹 / DIFFERENT 人工）
  *      无样本 / 判不同 / 验证失败 → 人工确认
  *      拒绝 → 升级为永久人工规则（denyRules）；取消 → 不计数
+ *      学习可用 /approval-core-clear-learning 一键全撤
  *
  * DSH 审批触发点：命令在沙箱内被拒后，模型带 sandbox_permissions 重试，
  * 触发 approval.request，reason 固定为：
@@ -18,7 +19,8 @@
  * 其中 mode 仅两级：workspace-write（写工作区，可回补）/
  * danger-full-access（任意文件/系统，危险）。
  *
- * flash 判定协议（v3）：输出 `SAFE` 或 `RISKY:<category>`
+ * flash 判定协议（v3，双协议解析统一走 classifier.mjs 的 parseVerdict）：
+ *   严格 JSON {"verdict":"approve"|"ask"} 或 SAFE / RISKY:<category>
  *   category ∈ { deletion, credential, remote, system, bulk, neutral }
  *   硬类别（前五个）→ 直接转人工；neutral（中立）→ 计数放行，第 N 次转人工裁决。
  *
@@ -33,6 +35,9 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { DEFAULT_DANGER_PATTERNS, compileDangerPatterns, findDangerMatch } from './danger-patterns.mjs'
+import { parseVerdict } from './classifier.mjs'
+import { DEFAULT_RISKY_THRESHOLD, shouldPrecipitate, precipitationRule, clearLearning } from './learning.mjs'
 
 const NAME = 'dsh-approval-gate'
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -279,7 +284,7 @@ function extractFiles(text) {
  * 记录一次审批事件（结构化，供 client 审查界面轮询展示）。
  * kind: 'auto'（自动放行）/ 'manual-pending'（转人工等待）/ 'manual-approved'（人工通过）/
  *       'manual-rejected'（人工拒绝）
- * learningCount/threshold：人工通过时的学习进度（n/3）
+ * learningCount/threshold：人工通过时的学习进度（n/threshold，默认阈值 5）
  */
 function recordApprovalEvent(sessionId, toolName, mode, reason, justification, verdict, opts) {
   eventSeq += 1
@@ -299,7 +304,8 @@ function recordApprovalEvent(sessionId, toolName, mode, reason, justification, v
   if (o.learningCount !== undefined) ev.learningCount = o.learningCount
   if (o.threshold !== undefined) ev.threshold = o.threshold
   if (o.category) ev.category = o.category
-  // path：判定路径标识（hard-category / unknown-category / deny-rule / deny / flash-failed / neutral-reject / neutral-confirm）
+  // path：判定路径标识（deny / deny-rule / hard-category / unknown-category / flash-failed /
+  //       neutral-confirm / auto-learned（学习自动放行：fp-hit 或 flash 同类）/ human-approved / learned-removed）
   if (o.path) ev.path = o.path
   try {
     ensureDataDir()
@@ -591,7 +597,7 @@ function normalizeConfig(raw) {
   cfg.allowRules = cfg.allowRules || DEFAULT_ALLOW_RULES
   cfg.denyRules = cfg.denyRules || []
   cfg.hardCategories = cfg.hardCategories || DEFAULT_HARD_CATEGORIES
-  cfg.riskyThreshold = cfg.riskyThreshold || 3
+  cfg.riskyThreshold = cfg.riskyThreshold || DEFAULT_RISKY_THRESHOLD
   cfg.judgeTimeoutMs = cfg.judgeTimeoutMs || 20000
   cfg.learning = cfg.learning || { enabled: true }
   return cfg
@@ -605,7 +611,7 @@ if (!config || typeof config !== 'object') {
     allowRules: DEFAULT_ALLOW_RULES,
     denyRules: [],
     hardCategories: DEFAULT_HARD_CATEGORIES,
-    riskyThreshold: 3,
+    riskyThreshold: DEFAULT_RISKY_THRESHOLD,
     judgeTimeoutMs: 20000,
     learning: { enabled: true }
   }
@@ -644,10 +650,15 @@ for (const k of Object.keys(learning.history)) {
     .slice(-10)
 }
 
+// 正则危险清单(确定性,先于一切)+ 关键词 denyKeywords 作为可配第二层。
+// 清单在模块加载时编译一次;reloadConfig() 热更新后不重建——denyKeywords 变更需重启生效(v1 明确"改文件生效")。
+const dangerPatterns = compileDangerPatterns([
+  ...DEFAULT_DANGER_PATTERNS,
+  ...(config.denyKeywords || []).map((kw) => kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+])
+
 function looksDeny(text) {
-  const lower = String(text || '').toLowerCase()
-  const keywords = config.denyKeywords || DEFAULT_DENY_KEYWORDS
-  return keywords.some((keyword) => lower.includes(String(keyword).toLowerCase()))
+  return findDangerMatch(String(text || ''), dangerPatterns) !== undefined
 }
 
 // reason 格式：`escalate sandbox to <mode>: <justification>`
@@ -655,6 +666,12 @@ function parseReason(reason) {
   const m = String(reason || '').match(/escalate\s+sandbox\s+to\s+([^\s:]+):?\s*([\s\S]*)/i)
   if (m) return { mode: m[1], justification: (m[2] || '').trim() }
   return { mode: '', justification: String(reason || '') }
+}
+
+// 复用原 RISKY:<category> 协议提取类别;提取失败给 'neutral'(仅在 parseVerdict 判 risky 后调用)
+function extractCategory(text) {
+  const m = String(text || '').toUpperCase().match(/RISKY\s*[:：]\s*([A-Z_]+)/)
+  return m ? m[1].toLowerCase() : 'neutral'
 }
 
 // 规则匹配：tool / mode / category / contains 均满足（缺省表示任意）
@@ -676,46 +693,8 @@ function learnKey(toolName, mode, category) {
   return `${toolName}|${mode || 'none'}|${category || 'none'}`
 }
 
-// 从 justification 提取「操作指纹」：路径 / 文件名 / 项目名等有区分度的片段。
-// 沉淀/拒绝规则必须携带指纹，避免宽规则（如 edit+danger 放行所有工作区外编辑）
-// 误放行用户未确认过的其他操作。提取不到 → 返回 null（调用方决定不沉淀）。
-const GENERIC_EN_WORDS = new Set([
-  'update', 'updates', 'updating', 'updated', 'install', 'installs', 'installing',
-  'deploy', 'deploys', 'deploying', 'sync', 'syncing', 'copy', 'copies', 'move',
-  'remove', 'removes', 'adding', 'change', 'changes', 'changing', 'set', 'clean',
-  'test', 'verify', 'check', 'fix', 'fixes', 'fixing', 'modify', 'modifies'
-])
-function extractOperationFingerprint(text) {
-  const s = String(text || '')
-  const candidates = []
-  // 1. 显式路径片段：~/xxx、/xxx/yyy、相对路径（含至少一段目录或文件名）
-  for (const m of s.matchAll(/(?:~\/|\/|\.\/)?[\w@.-]+\/[\w@.\/-]+/g)) {
-    const seg = m[0].replace(/[，。；、,.;:：\s]+$/g, '').trim()
-    if (seg.length >= 5 && seg.length <= 80) candidates.push(seg)
-  }
-  // 2. 带扩展名的文件名：xxx.md/.js/.json/.yml/.env 等
-  for (const m of s.matchAll(/[\w@.-]+\.(?:md|js|json|ya?ml|env|txt|py|ts|css|html|log|mjs|cjs)/gi)) {
-    const seg = m[0]
-    if (seg.length >= 4 && seg.length <= 60) candidates.push(seg)
-  }
-  // 3. 连字符/点分隔的项目或插件名（2-4 段英文标识符）
-  for (const m of s.matchAll(/\b[a-z][\w-]*(?:[-.][a-z][\w-]*){1,3}\b/gi)) {
-    const seg = m[0]
-    if (seg.length >= 6 && seg.length <= 50 && !/^(workspace-write|danger-full-access)$/i.test(seg)) {
-      candidates.push(seg)
-    }
-  }
-  // 4. 单段英文标识符（≥5 字符，排除通用动词/操作词）：README、config 等文档/配置名
-  for (const m of s.matchAll(/\b[a-z][a-z0-9-]{4,}\b/gi)) {
-    const seg = m[0]
-    if (GENERIC_EN_WORDS.has(seg.toLowerCase())) continue
-    if (seg.length <= 40) candidates.push(seg)
-  }
-  if (candidates.length === 0) return null
-  // 取最长片段（最长最有区分度），截断防超长
-  candidates.sort((a, b) => b.length - a.length)
-  return candidates[0].slice(0, 60)
-}
+// 操作指纹提取统一走 learning.mjs 的 extractOperationFingerprint（Task 4 纯模块，单测覆盖），
+// 避免双实现漂移。沉淀/拒绝规则必须携带指纹，避免宽规则误放行用户未确认过的操作。
 
 export default {
   name: NAME,
@@ -1062,7 +1041,8 @@ export default {
     }
 
     /**
-     * 单次 flash 判定：输出 SAFE 或 RISKY:<category>。
+     * 单次 flash 判定:双协议解析(严格 JSON {"verdict":"approve"|"ask"} 或 SAFE/RISKY:<category>)。
+     * 协议解析统一交给 classifier.mjs 的 parseVerdict(裸 RISKY/不确定/NOT SAFE 均按 risky)。
      * @returns {Promise<{verdict:'safe'|'risky', category?:string}>}
      */
     const judgeOnce = async (toolName, mode, justification, signal) => {
@@ -1074,19 +1054,10 @@ export default {
         '请判断：执行该操作是否会造成无法回补的后果或触碰敏感资源？输出 SAFE 或 RISKY:<类别>。'
       ].join('\n')
       const text = await callFlash(user, SYSTEM_PROMPT, signal)
-      const trimmed = text.trim().toUpperCase()
-      const riskyMatch = trimmed.match(/RISKY\s*[:：]\s*([A-Z_]+)/)
-      if (riskyMatch) {
-        const category = riskyMatch[1].toLowerCase()
-        return { verdict: 'risky', category }
-      }
-      // 裸 RISKY（无类别，旧协议残留）→ 按中立处理（有计数/裁决兜底）
-      if (trimmed.includes('RISKY')) return { verdict: 'risky', category: 'neutral' }
-      if (trimmed.includes('SAFE')) return { verdict: 'safe' }
-      // 模型表达不确定/无法判断（而非复述 prompt）→ 按中立处理（走确认制，fail-safe）
-      if (/无法判断|无法确定|不确定|不能确定|无法评估|UNCERTAIN|CANNOT (JUDGE|DETERMINE|ASSESS)/i.test(text)) {
-        return { verdict: 'risky', category: 'neutral' }
-      }
+      const verdict = parseVerdict(text)
+      if (verdict === 'allow') return { verdict: 'safe' }
+      if (verdict === 'risky') return { verdict: 'risky', category: extractCategory(text) }
+      if (verdict === 'ask') return { verdict: 'risky', category: 'neutral' }
       throw new Error('flash 输出无法解析: ' + JSON.stringify(text.slice(0, 120)))
     }
 
@@ -1298,33 +1269,22 @@ export default {
           return 'allowed-once'
         }
 
-        // 4f. 中立类别（neutral）：人工确认学习制——确认满 N 次后，第 N+1 次起自动放行并沉淀
-        //     （同一 key 被用户确认 N 次后视为可信，后续自动放行并写入沉淀规则）
-        const threshold = config.riskyThreshold || 3
+        // 4f. 中立类别（neutral）：人工确认学习制（方案 B 约束）——确认满 N 次后，操作指纹强命中才自动放行；
+        //     学习沉淀只写 learning.json（stats/history 持久保留），不写 allowRules 主表，
+        //     /approval-core-clear-learning 一键全撤。无指纹不沉淀，一律人工。
+        const threshold = config.riskyThreshold || DEFAULT_RISKY_THRESHOLD
         const confirmed = learning.stats[key] || 0
 
         if (confirmed >= threshold) {
           const fingerprint = extractOperationFingerprint(justification)
           const samples = learning.history[key] || []
-          const fpHit = Boolean(fingerprint) && samples.some((s) => s.fp === fingerprint)
+          const fpHit = shouldPrecipitate({ confirmed, threshold, fingerprint, samples })
 
           if (fpHit) {
-            // ① 指纹确定性命中（用户确认过该操作）→ 自动放行 + 沉淀规则
-            if (learning.enabled) {
-              const rule = { tool: toolName, category: cat, contains: fingerprint }
-              if (mode) rule.mode = mode
-              if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
-                rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} 人工确认后自动放行`
-                config.allowRules.push(rule)
-                saveJson(ALLOWLIST_PATH, config)
-                audit(`LEARN   ${key} 已沉淀白名单 ${JSON.stringify(rule)}`)
-              }
-            }
+            // ① 指纹确定性命中（用户确认过该操作）→ 自动放行。
+            //    stats/history 保留在 learning.json 供后续同类请求继续命中（沉淀即学习态本身）
             audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-learned=${confirmed + 1}/${threshold}) | ${reason.slice(0, 100)}`)
-            delete learning.stats[key]
-            delete learning.history[key]
-            saveJson(LEARNING_PATH, learning)
-            recordAutoAllow(sessionId, toolName, mode, reason, justification, 'fpHit', { baseDir: sessionCwd })
+            recordAutoAllow(sessionId, toolName, mode, reason, justification, 'fpHit', { path: 'auto-learned', baseDir: sessionCwd })
             return 'allowed-once'
           }
 
@@ -1333,25 +1293,17 @@ export default {
             // 语义判断是否属于已确认的同类操作（不依赖关键词）
             const sim = await verifySimilarityWithRetry(toolName, mode, justification, samples)
             if (sim.verdict === 'same') {
-              // 判同类 → 自动放行；有指纹则沉淀规则（无指纹不沉淀，保留样本供后续验证）
+              // 判同类 → 自动放行；有指纹则沉淀进 learning.json（history 补记该指纹，下次同操作直接 fp-hit）
               if (learning.enabled && fingerprint) {
-                const rule = { tool: toolName, category: cat, contains: fingerprint }
-                if (mode) rule.mode = mode
-                if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
-                  rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} flash 同类验证`
-                  config.allowRules.push(rule)
-                  saveJson(ALLOWLIST_PATH, config)
-                  audit(`LEARN   ${key} flash 判同类，已沉淀白名单 ${JSON.stringify(rule)}`)
-                }
-                delete learning.stats[key]
-                delete learning.history[key]
+                recordSample(key, justification)
                 saveJson(LEARNING_PATH, learning)
+                audit(`LEARN   ${key} flash 判同类，已沉淀指纹 ${fingerprint}`)
               } else {
-                // 无指纹：不沉淀，保留样本与阈值位（下次同操作仍靠 flash 验证放行）
-                audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（无指纹，未沉淀）| ${reason.slice(0, 100)}`)
+                // 无指纹/学习关闭：不沉淀，保留样本与阈值位（下次同操作仍靠 flash 验证放行）
+                audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（未沉淀）| ${reason.slice(0, 100)}`)
               }
               audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-same) | ${reason.slice(0, 100)}`)
-              recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same', { baseDir: sessionCwd })
+              recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same', { path: 'auto-learned', baseDir: sessionCwd })
               return 'allowed-once'
             }
             // 判 DIFFERENT / 验证失败 → 落人工确认
@@ -1367,7 +1319,7 @@ export default {
             // 批准 → 记录本次操作样本（背景+指纹）；计数保持阈值位
             recordSample(key, justification)
             saveJson(LEARNING_PATH, learning)
-            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', { kind: 'manual-approved', learningCount: confirmed, threshold, category: cat, path: 'neutral-confirm' })
+            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', { kind: 'manual-approved', learningCount: confirmed, threshold, category: cat, path: 'human-approved' })
           } else if (outcome === 'rejected') {
             // 拒绝 → 永久人工（带指纹；提取不到则拦全部同类，拒绝从严）
             const rule = { tool: toolName, category: cat }
@@ -1381,7 +1333,7 @@ export default {
             delete learning.stats[key]
             delete learning.history[key]
             saveJson(LEARNING_PATH, learning)
-            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', { kind: 'manual-rejected', category: cat, path: 'neutral-reject' })
+            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', { kind: 'manual-rejected', category: cat, path: 'learned-removed' })
           }
           return outcome
         }
@@ -1397,7 +1349,7 @@ export default {
           learning.stats[key] = confirmed + 1
           recordSample(key, justification)
           saveJson(LEARNING_PATH, learning)
-          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', { kind: 'manual-approved', learningCount: confirmed + 1, threshold, category: cat, path: 'neutral-confirm' })
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', { kind: 'manual-approved', learningCount: confirmed + 1, threshold, category: cat, path: 'human-approved' })
         } else if (outcome === 'rejected') {
           // 拒绝 → 升级为永久人工规则（带操作指纹；提取不到则拦全部同类，拒绝从严）
           const fingerprint = extractOperationFingerprint(justification)
@@ -1412,7 +1364,7 @@ export default {
           delete learning.stats[key]
           delete learning.history[key]
           saveJson(LEARNING_PATH, learning)
-          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', { kind: 'manual-rejected', category: cat, path: 'neutral-reject' })
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', { kind: 'manual-rejected', category: cat, path: 'learned-removed' })
         }
         // cancelled/unavailable：不计数（用户未表态，下次仍人工确认）
         return outcome
@@ -1422,6 +1374,26 @@ export default {
       }
     }, { prepend: true })
 
-    console.log(`[${NAME}] v3 已挂载：DENY→白名单→denyRules→flash(SAFE/硬类别/中立计数${config.riskyThreshold})→裁决学习（配置: ${ALLOWLIST_PATH}）`)
+    // ---- 一键清空学习沉淀（学习态独立于白名单主表，存于 learning.json） ----
+    try {
+      ctx.inject(['commands'], (commandCtx) => {
+        commandCtx.commands.register({
+          name: 'approval-core-clear-learning',
+          description: '清空全部学习沉淀（独立于白名单主表）',
+          handler: () => {
+            const cleared = clearLearning(learning)
+            saveJson(LEARNING_PATH, cleared)
+            Object.assign(learning, cleared)
+            audit(`LEARN-CLR 全部学习记录已清空`)
+            return { kind: 'success', text: '学习记录已清空（stats 与 history）' }
+          },
+        })
+        console.log(`[${NAME}] 命令已注册：/approval-core-clear-learning`)
+      })
+    } catch (error) {
+      console.warn(`[${NAME}] /approval-core-clear-learning 注册失败（宿主无 commands 服务时忽略）`, error)
+    }
+
+    console.log(`[${NAME}] v3 已挂载：DENY(正则危险清单)→白名单→denyRules→flash(SAFE/硬类别/中立计数${config.riskyThreshold})→裁决学习（配置: ${ALLOWLIST_PATH}）`)
   },
 }
