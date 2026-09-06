@@ -22,8 +22,9 @@ export function parseRisk(text) {
   const riskyMatch = trimmed.match(/RISKY\s*[:：]\s*([A-Z_]+)/)
   if (riskyMatch) return { verdict: 'risky', category: riskyMatch[1].toLowerCase() }
   if (trimmed.includes('RISKY')) return { verdict: 'risky', category: 'neutral' }
-  if (trimmed.includes('SAFE')) return { verdict: 'safe' }
+  if (/\bNOT\s+SAFE\b/.test(trimmed)) return { verdict: 'risky', category: 'neutral' }
   if (UNCERTAIN_RE.test(String(text ?? ''))) return { verdict: 'risky', category: 'neutral' }
+  if (/\bSAFE\b/.test(trimmed)) return { verdict: 'safe' }
   return undefined
 }
 

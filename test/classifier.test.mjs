@@ -27,3 +27,11 @@ test('统一入口', () => {
   assert.equal(parseVerdict('RISKY:system'), 'risky')
   assert.equal(parseVerdict('garbage'), undefined)
 })
+
+test('UNSAFE / NOT SAFE 不误判为 safe(fail-safe)', () => {
+  assert.equal(parseRisk('UNSAFE to run'), undefined)
+  assert.deepEqual(parseRisk('NOT SAFE at all'), { verdict: 'risky', category: 'neutral' })
+  assert.deepEqual(parseRisk('无法判断,感觉SAFE'), { verdict: 'risky', category: 'neutral' })
+  assert.deepEqual(parseRisk('SAFE'), { verdict: 'safe' })
+  assert.deepEqual(parseRisk('输出: SAFE'), { verdict: 'safe' })
+})
