@@ -601,321 +601,28 @@ window.__ModuleLoader__.load({
       )
     }
 
-    // ================= 设置页：自动审批规则管理（settings.section） =================
-    const RULE_SOURCE_TAGS = {
-      default: React.createElement('span', { className: 'ag-set-tag ag-set-tag-blue' }, '预置'),
-      learned: React.createElement('span', { className: 'ag-set-tag ag-set-tag-green' }, '学习沉淀'),
-      user: React.createElement('span', { className: 'ag-set-tag ag-set-tag-gray' }, '用户'),
-    }
-    function ruleSource(rule) {
-      const d = String(rule && rule.description || '')
-      if (d.indexOf('自动沉淀') === 0 || d.indexOf('人工确认后') >= 0 || d.indexOf('flash 同类') >= 0) return 'learned'
-      if (d === '用户自定义') return 'user'
-      return 'default'
-    }
-
-    function RulesSettings(props) {
-      const [snapshot, setSnapshot] = React.useState(null)
-      const [error, setError] = React.useState(null)
-      const [busy, setBusy] = React.useState(false)
-      const [feedback, setFeedback] = React.useState(null)
-      const [newKeyword, setNewKeyword] = React.useState('')
-      const [newRule, setNewRule] = React.useState({ tool: '', mode: '', category: '', contains: '' })
-      const [threshold, setThreshold] = React.useState('3')
-      const [timeoutMs, setTimeoutMs] = React.useState('20000')
-
-      const load = function () {
-        fetch('/api/auto-approve/rules', { headers: { 'cache-control': 'no-cache' } })
-          .then(function (r) { return r.json() })
-          .then(function (data) {
-            if (data && data.config) {
-              setSnapshot(data)
-              setThreshold(String(data.config.riskyThreshold))
-              setTimeoutMs(String(data.config.judgeTimeoutMs))
-              setError(null)
-            } else {
-              setError('加载规则失败：' + JSON.stringify(data).slice(0, 200))
-            }
-          })
-          .catch(function (e) { setError('加载规则失败：' + String((e && e.message) || e)) })
-      }
-      React.useEffect(function () { load() }, [])
-
-      const showFeedback = function (msg, ok) {
-        setFeedback({ msg: String(msg), ok: ok !== false })
-        setTimeout(function () { setFeedback(null) }, 4000)
-      }
-
-      const api = function (body) {
-        setBusy(true)
-        return fetch('/api/auto-approve/rules', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        }).then(function (r) { return r.json() }).then(function (res) {
-          if (res && res.ok) { load(); showFeedback('已生效（热更新，无需重启）'); return res }
-          showFeedback((res && res.error) || '操作失败', false)
-          return res
-        }).catch(function (e) {
-          showFeedback('请求失败：' + String((e && e.message) || e), false)
-        }).finally(function () { setBusy(false) })
-      }
-
-      const setupNow = function () {
-        setBusy(true)
-        fetch('/api/auto-approve/setup', { method: 'POST' })
-          .then(function (r) { return r.json() })
-          .then(function (res) {
-            if (res && res.ok) {
-              if (res.status === 'already') showFeedback('权限预设已配置，无需操作')
-              else showFeedback('已写入 cordis.patch.yml，请重启 dsh web 生效（status=' + res.status + '）')
-            } else {
-              showFeedback((res && res.error) || '初始化失败', false)
-            }
-            load()
-          })
-          .catch(function (e) { showFeedback('初始化请求失败：' + String((e && e.message) || e), false) })
-          .finally(function () { setBusy(false) })
-      }
-
-      if (!snapshot) {
-        return React.createElement('div', { className: 'ag-set' },
-          React.createElement('div', { className: error ? 'ag-set-err' : 'ag-set-ok' }, error || '加载中…'))
-      }
-
-      const cfg = snapshot.config
-      const setup = snapshot.setup || { configured: false }
-      const predefined = snapshot.predefined || {}
-      const preDeny = new Set(predefined.denyKeywords || [])
-      const preAllow = (predefined.allowRules || []).map(function (r) { return JSON.stringify(r) })
-      const preHard = new Set(predefined.hardCategories || [])
-      const learnStats = snapshot.learning && snapshot.learning.stats ? snapshot.learning.stats : {}
-      const learnHistory = snapshot.learning && snapshot.learning.history ? snapshot.learning.history : {}
-      const statKeys = Object.keys(learnStats)
-      const histKeys = Object.keys(learnHistory)
-
+    // ================= 设置页：自动审批说明（settings.section） =================
+    // v1 安全加固：不提供任何 HTTP 规则修改入口（/api/auto-approve/rules 与 /setup 已摘除）。
+    // 规则/阈值/超时/学习开关一律直接编辑 $DSH_HOME/auto-approve/allowlist.json 后生效
+    // （审批前热读盘）；权限预设直接在 profile 的 cordis.patch.yml 中配置。
+    function RulesSettings() {
       return React.createElement('div', { className: 'ag-set' },
         React.createElement('h3', { className: 'ag-set-title' }, '自动审批'),
         React.createElement('p', { className: 'ag-set-intro' },
-          '管理自动审批的放行与阻塞规则：查看当前判定管道、黑/白名单与学习进度，可自行添加规则（如把 edit 加入白名单后自动放行）或终止错误的学习。修改即时生效（热更新）。'),
-
-        // ---- 初始化卡片 ----
+          '自动审批的放行与阻塞规则 v1 不提供页面配置入口。请直接编辑配置文件：'),
         React.createElement('div', { className: 'ag-set-card' },
           React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' }, '初始化权限预设'),
+            React.createElement('div', { className: 'ag-set-card-title' }, '规则配置文件'),
             React.createElement('p', { className: 'ag-set-card-sub' },
-              '安装后需在 profile 的 cordis.patch.yml 添加 auto-approve 权限预设（预设表在配置构造时冻结，无法自动扩展）。' +
-              (setup.configured ? '当前已配置 ✓' : '当前未检测到，可一键写入。'))),
-          React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('button', {
-              type: 'button',
-              className: 'ag-set-btn' + (setup.configured ? '' : ' ag-set-btn-primary'),
-              disabled: busy,
-              onClick: setupNow,
-            }, setup.configured ? '重新检查' : '一键配置权限预设'),
-            !setup.configured ? React.createElement('span', { className: 'ag-set-note' }, '写入后需重启 dsh web 生效') : null,
-          ),
+              '编辑 $DSH_HOME/auto-approve/allowlist.json 可配置 denyKeywords / allowRules / denyRules / hardCategories / riskyThreshold / judgeTimeoutMs / learning。' +
+              '保存后自动生效（每次审批前热读盘，无需重启）；其中 denyKeywords 的正则危险清单在插件加载时编译，变更需重启 dsh web。')),
         ),
-
-        // ---- 管道总览 ----
         React.createElement('div', { className: 'ag-set-card' },
           React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' }, '当前判定管道'),
+            React.createElement('div', { className: 'ag-set-card-title' }, '权限预设'),
             React.createElement('p', { className: 'ag-set-card-sub' },
-              '每次沙箱越界按下述链路判定，下面的配置卡片按管道顺序排列：')),
-          React.createElement('div', { className: 'ag-set-grid' },
-            (cfg.hardCategories || []).map(function (c) {
-              const isPre = preHard.has(c)
-              return React.createElement('span', { className: 'ag-set-hc', key: c },
-                c + (isPre ? '' : ' · 自定义'))
-            })),
+              '启用自动审批需在 profile 的 cordis.patch.yml 中添加 auto-approve 权限预设（预设表在配置构造时冻结，无法自动扩展）。')),
         ),
-
-        // ---- 黑名单（denyKeywords） ----
-        React.createElement('div', { className: 'ag-set-card' },
-          React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' },
-              React.createElement('span', { className: 'ag-set-stage' }, '① DENY 层'),
-              '黑名单 · 不可逆危险词'),
-            React.createElement('p', { className: 'ag-set-card-sub' }, '管道第一步：命中即转人工（fail-safe，最高优先）。可添加自定义危险词；删除预置词有风险，请谨慎。')),
-          React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('input', {
-              className: 'ag-set-input', value: newKeyword, placeholder: '输入危险词，如 sudo rm',
-              onChange: function (e) { setNewKeyword(e.target.value) },
-              onKeyDown: function (e) { if (e.key === 'Enter' && newKeyword.trim()) { api({ op: 'add', kind: 'denyKeywords', value: newKeyword.trim() }); setNewKeyword('') } },
-            }),
-            React.createElement('button', {
-              type: 'button', className: 'ag-set-btn', disabled: busy || !newKeyword.trim(),
-              onClick: function () { api({ op: 'add', kind: 'denyKeywords', value: newKeyword.trim() }); setNewKeyword('') },
-            }, '添加'),
-          ),
-          (cfg.denyKeywords || []).length === 0
-            ? React.createElement('div', { className: 'ag-set-empty' }, '无黑名单词')
-            : React.createElement('div', { className: 'ag-set-list' },
-                cfg.denyKeywords.map(function (kw) {
-                  return React.createElement('div', { className: 'ag-set-item', key: kw },
-                    React.createElement('span', { className: 'ag-set-item-label' }, kw),
-                    preDeny.has(kw)
-                      ? React.createElement('span', { className: 'ag-set-item-meta' }, '预置')
-                      : null,
-                    React.createElement('button', {
-                      type: 'button', className: 'ag-set-item-del', title: '删除', 'aria-label': '删除 ' + kw,
-                      onClick: function () {
-                        if (preDeny.has(kw) && !window.confirm('删除预置危险词「' + kw + '」会降低安全性，确定？')) return
-                        api({ op: 'remove', kind: 'denyKeywords', value: kw })
-                      },
-                    }, '✕'),
-                  )
-                }),
-              ),
-        ),
-
-        // ---- 白名单（allowRules） ----
-        React.createElement('div', { className: 'ag-set-card' },
-          React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' },
-              React.createElement('span', { className: 'ag-set-stage' }, '② 白名单层'),
-              '白名单 · 自动放行规则'),
-            React.createElement('p', { className: 'ag-set-card-sub' },
-              '管道第二步：命中规则直接自动放行（不过 Flash）。示例：tool=edit + mode=danger-full-access → 所有工作区外 edit 自动放行。')),
-          React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('input', { className: 'ag-set-input', style: { width: 110 }, placeholder: 'tool', value: newRule.tool, onChange: function (e) { setNewRule(Object.assign({}, newRule, { tool: e.target.value })) } }),
-            React.createElement('input', { className: 'ag-set-input', style: { width: 150 }, placeholder: 'mode（可选）', value: newRule.mode, onChange: function (e) { setNewRule(Object.assign({}, newRule, { mode: e.target.value })) } }),
-            React.createElement('input', { className: 'ag-set-input', style: { width: 110 }, placeholder: 'category（可选）', value: newRule.category, onChange: function (e) { setNewRule(Object.assign({}, newRule, { category: e.target.value })) } }),
-            React.createElement('input', { className: 'ag-set-input', style: { width: 130 }, placeholder: 'contains（可选）', value: newRule.contains, onChange: function (e) { setNewRule(Object.assign({}, newRule, { contains: e.target.value })) } }),
-            React.createElement('button', {
-              type: 'button', className: 'ag-set-btn ag-set-btn-primary', disabled: busy || !(newRule.tool || newRule.mode || newRule.category || newRule.contains),
-              onClick: function () {
-                api({ op: 'add', kind: 'allowRules', value: newRule })
-                setNewRule({ tool: '', mode: '', category: '', contains: '' })
-              },
-            }, '添加'),
-          ),
-          (cfg.allowRules || []).length === 0
-            ? React.createElement('div', { className: 'ag-set-empty' }, '无白名单规则')
-            : React.createElement('div', { className: 'ag-set-list' },
-                cfg.allowRules.map(function (rule, idx) {
-                  const parts = []
-                  if (rule.tool) parts.push('tool=' + rule.tool)
-                  if (rule.mode) parts.push('mode=' + rule.mode)
-                  if (rule.category) parts.push('category=' + rule.category)
-                  if (rule.contains) parts.push('contains=' + rule.contains)
-                  const label = parts.join('  ') || '(任意)'
-                  const src = ruleSource(rule)
-                  const isPre = preAllow.indexOf(JSON.stringify({ mode: rule.mode, description: rule.description })) >= 0 || (rule.mode === 'workspace-write' && !rule.tool && !rule.category && !rule.contains)
-                  return React.createElement('div', { className: 'ag-set-item', key: idx },
-                    React.createElement('span', { className: 'ag-set-item-label' }, label),
-                    rule.description ? React.createElement('span', { className: 'ag-set-item-meta' }, rule.description) : null,
-                    RULE_SOURCE_TAGS[src] || RULE_SOURCE_TAGS.default,
-                    React.createElement('button', {
-                      type: 'button', className: 'ag-set-item-del', title: '删除', 'aria-label': '删除规则',
-                      onClick: function () {
-                        api({ op: 'remove', kind: 'allowRules', value: { tool: rule.tool, mode: rule.mode, category: rule.category, contains: rule.contains } })
-                      },
-                    }, '✕'),
-                  )
-                }),
-              ),
-        ),
-
-        // ---- 永久人工（denyRules） ----
-        React.createElement('div', { className: 'ag-set-card' },
-          React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' },
-              React.createElement('span', { className: 'ag-set-stage' }, '③ denyRules 层'),
-              '永久人工 · 拒绝升级规则'),
-            React.createElement('p', { className: 'ag-set-card-sub' },
-              '管道第三步：neutral 操作被你拒绝后自动升级到这里，命中直接转人工（永不自动放行）。硬风险类别（删除/凭据/远程/系统/批量）本身永久人工，不在此记录。可手动移除。')),
-          (cfg.denyRules || []).length === 0
-            ? React.createElement('div', { className: 'ag-set-empty' }, '无升级规则（硬风险类别本就永久人工，不在此记录）')
-            : React.createElement('div', { className: 'ag-set-list' },
-                cfg.denyRules.map(function (rule, idx) {
-                  const parts = []
-                  if (rule.tool) parts.push('tool=' + rule.tool)
-                  if (rule.mode) parts.push('mode=' + rule.mode)
-                  if (rule.category) parts.push('category=' + rule.category)
-                  if (rule.contains) parts.push('contains=' + rule.contains)
-                  return React.createElement('div', { className: 'ag-set-item', key: idx },
-                    React.createElement('span', { className: 'ag-set-item-label' }, parts.join('  ') || '(任意)'),
-                    React.createElement('button', {
-                      type: 'button', className: 'ag-set-item-del', title: '移除', 'aria-label': '移除规则',
-                      onClick: function () {
-                        api({ op: 'remove', kind: 'denyRules', value: { tool: rule.tool, mode: rule.mode, category: rule.category, contains: rule.contains } })
-                      },
-                    }, '✕'),
-                  )
-                }),
-              ),
-        ),
-
-        // ---- 学习状态（⑤ 学习沉淀） ----
-        React.createElement('div', { className: 'ag-set-card' },
-          React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' },
-              React.createElement('span', { className: 'ag-set-stage' }, '⑤ 学习沉淀'),
-              '正在学习'),
-            React.createElement('p', { className: 'ag-set-card-sub' },
-              '中立操作人工确认制：同一「工具|模式|类别」每确认一次计数 +1，确认满 ' + cfg.riskyThreshold + ' 次后，第 ' + (cfg.riskyThreshold + 1) + ' 次起自动放行并沉淀规则。若学习有误可终止（删除计数与样本）。')),
-          statKeys.length === 0
-            ? React.createElement('div', { className: 'ag-set-empty' }, '暂无正在学习的内容')
-            : React.createElement('div', { className: 'ag-set-learn' },
-                statKeys.map(function (k) {
-                  const samples = (learnHistory[k] || []).map(function (s) { return (s && (s.fp || s.ctx)) || '' }).join(' / ').slice(0, 160)
-                  return React.createElement('div', { className: 'ag-set-learn-item', key: k },
-                    React.createElement('div', { className: 'ag-set-learn-info' },
-                      React.createElement('span', { className: 'ag-set-learn-key' }, k),
-                      React.createElement('span', { className: 'ag-set-learn-sub' },
-                        '已确认 ' + learnStats[k] + '/' + cfg.riskyThreshold + (samples ? ' · ' + samples : '')),
-                    ),
-                    React.createElement('button', {
-                      type: 'button', className: 'ag-set-learn-stop', title: '终止学习（删除计数与样本）',
-                      onClick: function () {
-                        if (!window.confirm('终止「' + k + '」的学习？将删除其确认计数与样本。')) return
-                        api({ op: 'remove', kind: 'learning', value: k })
-                      },
-                    }, '终止'),
-                  )
-                }),
-              ),
-        ),
-
-        // ---- 阈值 / 超时（④ Flash 判定参数） ----
-        React.createElement('div', { className: 'ag-set-card' },
-          React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' },
-              React.createElement('span', { className: 'ag-set-stage' }, '④ Flash 判定'),
-              '阈值与超时'),
-            React.createElement('p', { className: 'ag-set-card-sub' },
-              '管道第四步：确认阈值 N（学习满 N 次后第 N+1 次自动放行）与 Flash 判断超时（超时自动重试 1 次，仍失败转人工）。')),
-          React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('span', { className: 'ag-set-item-meta' }, '确认阈值 N：'),
-            React.createElement('input', {
-              className: 'ag-set-input ag-set-input-num', type: 'number', min: 1, value: threshold,
-              onChange: function (e) { setThreshold(e.target.value) },
-            }),
-            React.createElement('button', {
-              type: 'button', className: 'ag-set-btn', disabled: busy,
-              onClick: function () { api({ op: 'set', kind: 'riskyThreshold', value: Number(threshold) }) },
-            }, '保存'),
-            React.createElement('span', { className: 'ag-set-item-meta' }, '满 ' + Number(threshold) + ' 次后第 ' + (Number(threshold) + 1) + ' 次起自动'),
-          ),
-          React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('span', { className: 'ag-set-item-meta' }, 'Flash 判断超时(ms)：'),
-            React.createElement('input', {
-              className: 'ag-set-input ag-set-input-num', type: 'number', min: 1000, value: timeoutMs,
-              onChange: function (e) { setTimeoutMs(e.target.value) },
-            }),
-            React.createElement('button', {
-              type: 'button', className: 'ag-set-btn', disabled: busy,
-              onClick: function () { api({ op: 'set', kind: 'judgeTimeoutMs', value: Number(timeoutMs) }) },
-            }, '保存'),
-          ),
-        ),
-
-        // ---- 反馈 ----
-        feedback
-          ? React.createElement('div', { className: feedback.ok ? 'ag-set-ok' : 'ag-set-err' }, feedback.msg)
-          : null,
       )
     }
 
@@ -964,7 +671,7 @@ window.__ModuleLoader__.load({
           )
         })
 
-        // 设置页：自动审批规则管理（settings.section）
+        // 设置页：自动审批说明（settings.section；v1 无规则修改 API）
         slots.inject('settings.section', function () {
           return slots.register(
             { name: 'settings.section', id: 'dsh-approval-gate.settings', order: 60, label: '自动审批' },

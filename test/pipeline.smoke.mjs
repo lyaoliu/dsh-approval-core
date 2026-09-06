@@ -156,8 +156,9 @@ try {
     check(s, 'enabled=false：fp 命中仍转人工（next 1 次，不自动放行）',
       rOff.result === 'allowed-once' && rOff.nextCalls === 1 && !hasFpRefErr(rOff.errs),
       `nextCalls=${rOff.nextCalls} fpRefErr=${hasFpRefErr(rOff.errs)}`)
-    check(s, 'enabled=false：stats 不增长（学习放行关闭）', (learningOf(h).stats || {})[KEY] === 5,
-      `stats=${JSON.stringify((learningOf(h).stats || {})[KEY])}`)
+    const L = learningOf(h) || {}
+    check(s, 'enabled=false：stats 不增长（学习放行关闭）', (L.stats || {})[KEY] === 5,
+      `stats=${JSON.stringify((L.stats || {})[KEY])}`)
     setLearningFlag(h, true)
     const rOn = await callOnce(h, req())
     check(s, '重新 enabled=true：同指纹立即自动放行（next 0 次）',
@@ -193,8 +194,9 @@ try {
       `result=${r.result} nextCalls=${r.nextCalls}`)
     check(s, 'DENY 层拦截：flash 分类器 0 次调用', r.flashCalls === 0, `flashCalls=${r.flashCalls}`)
     check(s, 'DENY 路径无任何错误输出', r.errs.length === 0 && !hasFpRefErr(r.errs), `errs=${r.errs.length}`)
-    check(s, '危险请求不产生学习记录', !learningOf(h) || !Object.keys((learningOf(h).stats) || {}).length,
-      `stats=${JSON.stringify((learningOf(h) || {}).stats)}`)
+    const Ld = learningOf(h) || {}
+    check(s, '危险请求不产生学习记录', !Object.keys(Ld.stats || {}).length,
+      `stats=${JSON.stringify(Ld.stats || {})}`)
   }
 } finally {
   delete process.env.DSH_HOME
