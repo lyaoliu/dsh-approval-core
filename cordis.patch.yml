@@ -1,0 +1,6 @@
+# dsh-approval-core bundle patch: inserts the plugin row.
+# NOTE: the 'auto-approve' permission preset must exist in the profile's
+# cordis.patch.yml (already configured on this machine).
+- insert:
+    - id: dsh-approval-core
+      name: 'dsh-approval-core'
