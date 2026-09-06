@@ -37,7 +37,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_DANGER_PATTERNS, compileDangerPatterns, findDangerMatch } from './danger-patterns.mjs'
 import { parseVerdict } from './classifier.mjs'
-import { DEFAULT_RISKY_THRESHOLD, shouldPrecipitate, precipitationRule, clearLearning } from './learning.mjs'
+import { DEFAULT_RISKY_THRESHOLD, shouldPrecipitate, precipitationRule, clearLearning, extractOperationFingerprint } from './learning.mjs'
 
 const NAME = 'dsh-approval-gate'
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
