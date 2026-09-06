@@ -1280,7 +1280,9 @@ export default {
           const samples = learning.history[key] || []
           const fpHit = shouldPrecipitate({ confirmed, threshold, fingerprint, samples })
 
-          if (fpHit) {
+          // learning.enabled 是学习放行总开关（方案 B）：显式 false 时即使指纹命中也不自动放行，
+          // 落到下方人工确认路径（开关关闭 = 回到每次人工，最保守语义）
+          if (fpHit && learning.enabled !== false) {
             // ① 指纹确定性命中（用户确认过该操作）→ 自动放行。
             //    stats/history 保留在 learning.json 供后续同类请求继续命中（沉淀即学习态本身）
             audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-learned=${confirmed + 1}/${threshold}) | ${reason.slice(0, 100)}`)
@@ -1290,24 +1292,27 @@ export default {
 
           if (samples.length > 0) {
             // 指纹未命中 → flash 第三方同类验证：把本次操作背景 + 用户确认样本给 flash，
-            // 语义判断是否属于已确认的同类操作（不依赖关键词）
-            const sim = await verifySimilarityWithRetry(toolName, mode, justification, samples)
-            if (sim.verdict === 'same') {
-              // 判同类 → 自动放行；有指纹则沉淀进 learning.json（history 补记该指纹，下次同操作直接 fp-hit）
-              if (learning.enabled && fingerprint) {
-                recordSample(key, justification)
-                saveJson(LEARNING_PATH, learning)
-                audit(`LEARN   ${key} flash 判同类，已沉淀指纹 ${fingerprint}`)
-              } else {
-                // 无指纹/学习关闭：不沉淀，保留样本与阈值位（下次同操作仍靠 flash 验证放行）
-                audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（未沉淀）| ${reason.slice(0, 100)}`)
+            // 语义判断是否属于已确认的同类操作（不依赖关键词）。flash-same 自动放行同属学习放行，
+            // 同受 learning.enabled 总开关管：显式 false 时不验证不自动放行，直接落人工确认
+            if (learning.enabled !== false) {
+              const sim = await verifySimilarityWithRetry(toolName, mode, justification, samples)
+              if (sim.verdict === 'same') {
+                // 判同类 → 自动放行；有指纹则沉淀进 learning.json（history 补记该指纹，下次同操作直接 fp-hit）
+                if (fingerprint) {
+                  recordSample(key, justification)
+                  saveJson(LEARNING_PATH, learning)
+                  audit(`LEARN   ${key} flash 判同类，已沉淀指纹 ${fingerprint}`)
+                } else {
+                  // 无指纹：不沉淀，保留样本与阈值位（下次同操作仍靠 flash 验证放行）
+                  audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（未沉淀）| ${reason.slice(0, 100)}`)
+                }
+                audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-same) | ${reason.slice(0, 100)}`)
+                recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same', { path: 'auto-learned', baseDir: sessionCwd })
+                return 'allowed-once'
               }
-              audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-same) | ${reason.slice(0, 100)}`)
-              recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same', { path: 'auto-learned', baseDir: sessionCwd })
-              return 'allowed-once'
+              // 判 DIFFERENT / 验证失败 → 落人工确认
+              audit(`SIMDIFF ${toolName} mode=${mode || 'none'} category=${cat} flash 判不同类 → 人工 | ${reason.slice(0, 120)}`)
             }
-            // 判 DIFFERENT / 验证失败 → 落人工确认
-            audit(`SIMDIFF ${toolName} mode=${mode || 'none'} category=${cat} flash 判不同类 → 人工 | ${reason.slice(0, 120)}`)
           }
 
           // 指纹未命中（且无样本可验证 / 判不同类）：转人工确认
