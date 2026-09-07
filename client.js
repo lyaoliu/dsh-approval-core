@@ -514,7 +514,10 @@ window.__ModuleLoader__.load({
         return function () { alive = false; clearInterval(timer) }
       }, [sessionId])
 
-      return React.createElement('div', { className: 'ag-view' },
+      // data-conversation-composer-overlay：宿主布局钩子——声明后审批视图占满内容区
+      // （scrollBody 锁滚动），聊天输入框变为覆盖在视图底部的浮层（与聊天 tab 视觉一致）。
+      // 不声明时视图被压缩、输入框 sticky 悬浮其下（v0.2.0 真机发现的布局现象）。
+      return React.createElement('div', { className: 'ag-view', 'data-conversation-composer-overlay': '' },
         React.createElement('div', { className: 'ag-view-head' },
           React.createElement('div', { className: 'ag-view-title' }, '自动放行审批'),
           React.createElement('div', { className: 'ag-view-sub' }, '本会话中自动放行与人工审批的记录（最新在上）'),
