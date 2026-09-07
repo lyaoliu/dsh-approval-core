@@ -1082,11 +1082,12 @@ export default {
           kind: 'exact',
           path: '/api/auto-approve/reverts',
           handler: async (req, res) => {
+            const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)) }
             try {
-              if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { ok: false, error: 'method not allowed' })
+              if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, { ok: false, error: 'method not allowed' })
               const url = new URL(req.url, 'http://localhost')
               const eventId = Number.parseInt(url.searchParams.get('eventId') || '', 10)
-              if (!Number.isInteger(eventId)) return send(res, 400, { ok: false, error: 'eventId 必填' })
+              if (!Number.isInteger(eventId)) return send(400, { ok: false, error: 'eventId 必填' })
               const hunkKeys = []
               try {
                 const text = readFileSync(join(DATA_DIR, 'reverts.jsonl'), 'utf8')
@@ -1098,9 +1099,9 @@ export default {
                   } catch { /* 跳过坏行 */ }
                 }
               } catch { /* 文件不存在=无撤销记录 */ }
-              send(res, 200, { ok: true, eventId, hunkKeys, wholeReverted: hunkKeys.includes('*') })
+              send(200, { ok: true, eventId, hunkKeys, wholeReverted: hunkKeys.includes('*') })
             } catch (e) {
-              send(res, 400, { ok: false, error: String((e && e.message) || e) })
+              send(400, { ok: false, error: String((e && e.message) || e) })
             }
           },
         })
