@@ -38,8 +38,6 @@ import { join } from 'node:path'
 import { DEFAULT_DANGER_PATTERNS, compileDangerPatterns, findDangerMatch } from './danger-patterns.mjs'
 import { parseVerdict } from './classifier.mjs'
 import { DEFAULT_RISKY_THRESHOLD, shouldPrecipitate, clearLearning, extractOperationFingerprint } from './learning.mjs'
-// [load-probe] 模块加载即写标记(冒烟诊断用, 验证后移除)
-try { const fs = await import('node:fs'); fs.writeFileSync('C:/Users/LIULU/.dsh/auto-approve/load-probe.txt', String(new Date().toISOString())) } catch {}
 
 const NAME = 'dsh-approval-gate'
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -941,9 +939,10 @@ export default {
           audit(`PRESET  current() failed: ${error && error.message}`)
           return next()
         }
-        // [diag] 记录每次审批到达时的预设判定(冒烟诊断, 稳定后改为仅非 auto-approve 时记录)
-        audit(`PRESET  resolved=${preset} tool=${String(req.toolName || 'unknown')}`)
-        if (preset !== PRESET_NAME) return next()
+        if (preset !== PRESET_NAME) {
+          // 非 auto-approve 预设：静默放行给下游应答者(正常路径，不刷审计)
+          return next()
+        }
         if (req.signal && req.signal.aborted) return next()
 
         const toolName = String(req.toolName || 'unknown')
