@@ -456,6 +456,14 @@ function loadJson(path, fallback) {
 
 function saveJson(path, data) {
   try {
+    // dataDir 是启动期字段（声明数据目录位置，鸡生蛋问题：allowlist 自身必须在默认目录），
+    // 内存 config 经过 reload 往返可能丢失它——写 allowlist 前以磁盘文件为该字段的唯一权威合并回。
+    if (path === ALLOWLIST_PATH && data && typeof data === 'object' && data.dataDir === undefined) {
+      try {
+        const disk = JSON.parse(readFileSync(ALLOWLIST_PATH, 'utf8'))
+        if (disk && typeof disk.dataDir === 'string') data.dataDir = disk.dataDir
+      } catch { /* 磁盘文件不可读：按无 dataDir 处理 */ }
+    }
     ensureDataDir()
     writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf8')
   } catch (error) {
