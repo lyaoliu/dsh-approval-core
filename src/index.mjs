@@ -1038,11 +1038,46 @@ export default {
     } catch (error) {
       console.error(`[${NAME}] 注册 diff/快照 API 失败`, error)
     }
+    // 已撤销状态查询（只读）：DiffPanel 打开时拉该事件哪些块已撤销过，直接置灰
+    let offRevertsRoute = null
+    try {
+      if (ctx.webServer && typeof ctx.webServer.register === 'function') {
+        offRevertsRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/reverts',
+          handler: async (req, res) => {
+            try {
+              if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { ok: false, error: 'method not allowed' })
+              const url = new URL(req.url, 'http://localhost')
+              const eventId = Number.parseInt(url.searchParams.get('eventId') || '', 10)
+              if (!Number.isInteger(eventId)) return send(res, 400, { ok: false, error: 'eventId 必填' })
+              const hunkKeys = []
+              try {
+                const text = readFileSync(join(DATA_DIR, 'reverts.jsonl'), 'utf8')
+                for (const line of text.split('\n')) {
+                  if (!line.trim()) continue
+                  try {
+                    const r = JSON.parse(line)
+                    if (r && r.eventId === eventId && typeof r.hunkKey === 'string') hunkKeys.push(r.hunkKey)
+                  } catch { /* 跳过坏行 */ }
+                }
+              } catch { /* 文件不存在=无撤销记录 */ }
+              send(res, 200, { ok: true, eventId, hunkKeys, wholeReverted: hunkKeys.includes('*') })
+            } catch (e) {
+              send(res, 400, { ok: false, error: String((e && e.message) || e) })
+            }
+          },
+        })
+      }
+    } catch (error) {
+      console.error(`[${NAME}] 注册已撤销查询 API 失败`, error)
+    }
     ctx.effect(() => () => {
       if (offEventsRoute) { try { offEventsRoute() } catch (e) {} }
       if (offRulesRoute) { try { offRulesRoute() } catch (e) {} }
       if (offDiffRoute) { try { offDiffRoute() } catch (e) {} }
       if (offRevertRoute) { try { offRevertRoute() } catch (e) {} }
+      if (offRevertsRoute) { try { offRevertsRoute() } catch (e) {} }
       if (offSnapStatsRoute) { try { offSnapStatsRoute() } catch (e) {} }
       if (offSnapClearRoute) { try { offSnapClearRoute() } catch (e) {} }
     })

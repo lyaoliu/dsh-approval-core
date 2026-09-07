@@ -325,11 +325,19 @@ window.__ModuleLoader__.load({
       const [revertMsg, setRevertMsg] = React.useState(null)
       const [reverting, setReverting] = React.useState(false)
       const [revertDone, setRevertDone] = React.useState(false)
+      // 已撤销的块(持久态感知)：Set<hunkKey>，初始从 reverts.jsonl 读取
+      const [revertedHunks, setRevertedHunks] = React.useState(null) // null=未加载 | Set
+      const hunkKeyOfLines = function (h) {
+        const del = (h.lines || []).filter(function (c) { return c.type === 'del' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).join('\n')
+        const add = (h.lines || []).filter(function (c) { return c.type === 'add' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).join('\n')
+        return 'hunk:' + del.length + ':' + add.length + ':' + del + '\n' + add
+      }
 
       React.useEffect(function () {
         setData(null)
         setError(null)
         setRevertDone(false)
+        setRevertedHunks(null)
         fetch('/api/auto-approve/diff?eventId=' + eventId + '&path=' + encodeURIComponent(path), { headers: { 'cache-control': 'no-cache' } })
           .then(function (r) { return r.json() })
           .then(function (res) {
@@ -337,6 +345,14 @@ window.__ModuleLoader__.load({
             else setError((res && res.error) || '加载 diff 失败')
           })
           .catch(function (e) { setError('加载 diff 失败：' + String((e && e.message) || e)) })
+        // 拉已撤销状态（持久态）：该事件哪些块已撤销过，直接置灰
+        fetch('/api/auto-approve/reverts?eventId=' + eventId, { headers: { 'cache-control': 'no-cache' } })
+          .then(function (r) { return r.json() })
+          .then(function (res) {
+            if (res && res.ok && Array.isArray(res.hunkKeys)) setRevertedHunks(new Set(res.hunkKeys))
+            else setRevertedHunks(new Set())
+          })
+          .catch(function () { setRevertedHunks(new Set()) })
       }, [eventId, path])
 
       const doRevert = function () {
@@ -367,6 +383,12 @@ window.__ModuleLoader__.load({
         })
       }
 
+      // 某块是否已撤销（持久态 + 本面板生命周期）：已撤销的块按钮置灰「已撤销」
+      const isHunkReverted = function (h) {
+        if (!revertedHunks) return false
+        return revertedHunks.has(hunkKeyOfLines(h))
+      }
+
       const doRevertHunk = function (h) {
         // 块级撤销：只撤这一个 hunk 的变更（del 行恢复、add 行删除），其余保留
         if (reverting || revertDone) return
@@ -381,8 +403,13 @@ window.__ModuleLoader__.load({
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ sessionId: sessionId, eventId: eventId, path: path, hunk: { delLines: delLines, addLines: addLines, ctxLines: ctxLines } }),
         }).then(function (r) { return r.json() }).then(function (res) {
-          if (res && res.ok) { setRevertMsg('已发送该块的撤销指令'); setRevertDone(true) }
-          else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递'); setRevertDone(true) }
+          if (res && res.ok) {
+            setRevertMsg('已发送该块的撤销指令')
+            // 本地即时标记该块已撤销（服务端已落盘），避免面板生命周期内重复投递
+            const key = 'hunk:' + delLines.join('\n').length + ':' + addLines.join('\n').length + ':' + delLines.join('\n') + '\n' + addLines.join('\n')
+            setRevertedHunks(function (prev) { const s = new Set(prev || []); s.add(key); return s })
+          }
+          else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递') }
           else { setRevertMsg((res && res.error) || '发送失败') }
         }).catch(function (e) { setRevertMsg('发送失败：' + String((e && e.message) || e)) }).finally(function () { setReverting(false) })
       }
@@ -434,12 +461,15 @@ window.__ModuleLoader__.load({
                         }),
                         (h.lines || []).some(function (c) { return c.type === 'add' || c.type === 'del' })
                           ? React.createElement('div', { className: 'ag-diff-hunk-actions' },
-                              React.createElement('button', {
-                                type: 'button', className: 'ag-set-btn',
-                                onClick: function () { doRevertHunk(h) },
-                                disabled: reverting || revertDone,
-                                title: '仅撤销这一块的改动，其余保留',
-                              }, '撤销此块'),
+                              (function () {
+                                const done = isHunkReverted(h)
+                                return React.createElement('button', {
+                                  type: 'button', className: 'ag-set-btn',
+                                  onClick: function () { if (!done) doRevertHunk(h) },
+                                  disabled: done || reverting || revertDone,
+                                  title: done ? '该块已撤销过' : '仅撤销这一块的改动，其余保留',
+                                }, done ? '已撤销' : '撤销此块')
+                              })(),
                             )
                           : null,
                       )
