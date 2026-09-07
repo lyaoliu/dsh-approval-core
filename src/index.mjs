@@ -297,6 +297,35 @@ function diffLines(before, after, contextLines) {
   }
 }
 
+/** 反向应用一个 hunk（纯函数，不写文件）：把该块的变更倒回去。
+ *  输入：hunk.lines（op 序列，行带 aNo/bNo 行号）。
+ *  输出：{ targetText, aStart, aEnd, bStart, bEnd } —— targetText 是"撤销后该块应有的完整文本"，
+ *  aStart-aEnd 是该块在改动前文件(a 侧)的行号范围，bStart-bEnd 是在当前文件(b 侧)的行号范围。
+ *  AI 侧语义：用 targetText 整体替换当前文件的第 bStart-bEnd 行；若行号/内容对不上，以锚点定位，定位失败先说明不执行。
+ */
+export function reverseHunk(lines) {
+  const list = Array.isArray(lines) ? lines : []
+  const target = []
+  let aStart = null, aEnd = null, bStart = null, bEnd = null
+  for (const l of list) {
+    if (!l || typeof l.text !== 'string') continue
+    if (l.type === 'del' || l.type === 'same') {
+      // del=改动前存在→撤销后恢复；same=上下文→原样保留
+      target.push(l.text)
+      if (typeof l.aNo === 'number') {
+        if (aStart === null) aStart = l.aNo
+        aEnd = l.aNo
+      }
+    }
+    // add=改动新增→撤销时删掉（不进 target）
+    if (typeof l.bNo === 'number') {
+      if (bStart === null) bStart = l.bNo
+      bEnd = l.bNo
+    }
+  }
+  return { targetText: target.join('\n'), aStart, aEnd, bStart, bEnd }
+}
+
 // 自动放行事件序号（进程内递增，重启后从现有文件恢复，避免与历史重复）；
 // 恢复扫描在 DATA_DIR 解析（依赖 allowlist.json 的 dataDir）之后执行，见 reloadConfig 定义前的 initPaths()
 let eventSeq = 0
@@ -954,11 +983,22 @@ export default {
                 const addLines = pick(hunk.addLines).map((l) => '+ ' + l).join('\n')
                 const ctxLines = pick(hunk.ctxLines).slice(0, 3).map((l) => '  ' + l).join('\n')
                 const singlePath = typeof body.path === 'string' && body.path.trim() ? '`' + body.path.trim() + '`' : null
+                // 目标状态前置运算：从本次请求的 hunk 行重建 op 序列，反向算出"撤销后该块应有的完整文本 + 行号范围"，
+                // AI 只做替换+核对，不再脑内做反向运算。
+                const _ops = []
+                for (const t of pick(hunk.delLines)) _ops.push({ type: 'del', text: t.replace(/^- /, '') })
+                for (const t of pick(hunk.addLines)) _ops.push({ type: 'add', text: t.replace(/^\+ /, '') })
+                for (const t of pick(hunk.ctxLines).slice(0, 3)) _ops.push({ type: 'same', text: t.replace(/^  /, '') })
+                const _rev = reverseHunk(_ops)
+                const _range = (_rev.bStart !== null && _rev.bEnd !== null)
+                  ? '（当前文件的第 ' + _rev.bStart + '-' + _rev.bEnd + ' 行）' : ''
                 content = '请撤销以下自动审批操作中【单个改动块】的文件改动（仅撤销这一块，其余改动一律保留）：\n' +
                   '- 文件：' + (singlePath || files || '(未知)') + '\n' +
+                  (_rev.targetText
+                    ? '- 【改后目标】把该文件' + _range + '整体替换为以下文本：\n```\n' + _rev.targetText + '\n```\n' : '') +
                   (delLines ? '- 恢复这些行（本次改动删除的原文）：\n```\n' + delLines + '\n```\n' : '') +
                   (addLines ? '- 删除这些行（本次改动新增的内容）：\n```\n' + addLines + '\n```\n' : '') +
-                  (ctxLines ? '- 定位锚点（上下文行，用于确认改动位置）：\n```\n' + ctxLines + '\n```\n' : '') +
+                  (ctxLines ? '- 定位锚点（若行号对不上，以这些上下文行定位；定位失败先说明，不执行）：\n```\n' + ctxLines + '\n```\n' : '') +
                   snapHint
               } else {
                 content = '请撤销以下自动审批操作带来的文件改动（恢复为审批前的状态）：\n' +
