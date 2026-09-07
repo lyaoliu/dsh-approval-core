@@ -419,7 +419,7 @@ window.__ModuleLoader__.load({
             const key = 'hunk:' + delLines.join('\n').length + ':' + addLines.join('\n').length + ':' + delLines.join('\n') + '\n' + addLines.join('\n')
             setRevertedHunks(function (prev) { const s = new Set(prev || []); s.add(key); return s })
           }
-          else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递'); setRevertDone(true) }
+          else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递') }
           else { setRevertMsg((res && res.error) || '发送失败') }
         }).catch(function (e) { setRevertMsg('发送失败：' + String((e && e.message) || e)) }).finally(function () { setReverting(false) })
       }
