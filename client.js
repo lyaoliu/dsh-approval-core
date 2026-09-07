@@ -1,5 +1,5 @@
-/**
- * dsh-approval-gate — 自动审批审查界面（浏览器端 bundle）
+﻿/**
+ * dsh-approval-core — 自动审批审查界面（浏览器端 bundle）
  *
  * 提供两处 UI（严格按 DSH 设计语言，--dsw-alias-* tokens）：
  * 1. ✅ 自动放行提示条：conversation.input.dock（输入框上方独立行，order=30，
@@ -12,7 +12,7 @@
  * （events.jsonl 由 host 插件在每次自动放行时追加）。
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-approval-gate',
+  id: 'dsh-approval-core',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
@@ -635,11 +635,11 @@ window.__ModuleLoader__.load({
         let styleEl = null
         try {
           styleEl = document.createElement('style')
-          styleEl.setAttribute('data-plugin-css', 'dsh-approval-gate')
+          styleEl.setAttribute('data-plugin-css', 'dsh-approval-core')
           styleEl.textContent = CSS
           document.head.appendChild(styleEl)
         } catch (e) {
-          console.error('[dsh-approval-gate] 注入样式失败：' + String((e && e.message) || e))
+          console.error('[dsh-approval-core] 注入样式失败：' + String((e && e.message) || e))
         }
         ctx.effect(() => {
           return () => {
@@ -652,7 +652,7 @@ window.__ModuleLoader__.load({
         // ✅ 自动放行提示条：输入框上方独立行（order=30，排在 todo/goal/queue 之下，天然不重叠）
         slots.inject('conversation.input.dock', function () {
           return slots.register(
-            { name: 'conversation.input.dock', id: 'dsh-approval-gate.notice', order: 30, label: '自动放行提示' },
+            { name: 'conversation.input.dock', id: 'dsh-approval-core.notice', order: 30, label: '自动放行提示' },
             function (props) { return React.createElement(NoticeStrip, { slotsProps: props }) },
           )
         })
@@ -662,7 +662,7 @@ window.__ModuleLoader__.load({
           return slots.register(
             {
               name: 'conversation.view',
-              id: 'dsh-approval-gate.history',
+              id: 'dsh-approval-core.history',
               order: 20,
               label: '审批',
               inject: (sessionId) => ({ sessionId }),
@@ -674,7 +674,7 @@ window.__ModuleLoader__.load({
         // 设置页：自动审批说明（settings.section；v1 无规则修改 API）
         slots.inject('settings.section', function () {
           return slots.register(
-            { name: 'settings.section', id: 'dsh-approval-gate.settings', order: 60, label: '自动审批' },
+            { name: 'settings.section', id: 'dsh-approval-core.settings', order: 60, label: '自动审批' },
             function (props) { return React.createElement(RulesSettings, { slotsProps: props }) },
           )
         })
