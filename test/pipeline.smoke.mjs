@@ -318,6 +318,55 @@ try {
       check(s, 'approval/request 处理器已挂载', false, 'handlers missing')
     }
   }
+  // ---- 场景 h：neutral 人工拒绝（rejected）→ 终态 manual-rejected 事件带 snapshotEventId（回退查 pending 快照） ----
+  // 覆盖 neutral 学习路径两处 learned-removed 终态：
+  //   ① stats 已达阈值、样本存在但指纹未命中且 flash 判不同类 → 人工 → 拒绝（index.mjs 第一处 rejected 分支）
+  //   ② stats 未达阈值 → 人工 → 拒绝（index.mjs 第二处 rejected 分支）
+  // 回归背景：approved 终态已带 snapshotEventId，rejected 终态此前遗漏 —— diff/撤销按终态事件回退查快照时拿不到快照引用。
+  {
+    const s = 'h-rejected-snapshot-event-id'
+    const h = await mount(s)
+    if (h.handlers['approval/request']) {
+      // ① 阈值后拒绝：铺 5 次批准（stats=5 + 样本沉淀），再用不同理由拒绝
+      //    （不同理由 → 指纹未命中 → flash 同类验证输出 DIFFERENT → 落人工；拒绝后升级永久人工规则）
+      for (let i = 1; i <= 5; i++) await callOnce(h, req())
+      const rej1 = await callOnce(h, req('清理另一个无关目录 C:/tmp/other/logs 下的过期文件'), 'rejected')
+      check(s, '① 阈值后拒绝：rejected 透传、next 恰好 1 次',
+        rej1.result === 'rejected' && rej1.nextCalls === 1,
+        `result=${rej1.result} nextCalls=${rej1.nextCalls}`)
+      let events = eventsJsonlOf(h)
+      let pendings = events.filter((e) => e.kind === 'manual-pending')
+      let rejects = events.filter((e) => e.kind === 'manual-rejected')
+      check(s, '① manual-rejected 事件带 snapshotEventId 且指向本次 pending 事件 id',
+        rejects.length === 1 && pendings.length === 6 && rejects[0].snapshotEventId !== undefined &&
+        rejects[0].snapshotEventId === pendings[pendings.length - 1].id,
+        `rejects=${JSON.stringify(rejects.map((e) => ({ id: e.id, snapRef: e.snapshotEventId, path: e.path })))} pendingIds=${JSON.stringify(pendings.map((e) => e.id))}`)
+      check(s, '① 终态 path=learned-removed（neutral 学习路径标识）',
+        rejects.length === 1 && rejects[0].path === 'learned-removed', `path=${rejects.length ? rejects[0].path : '(none)'}`)
+
+      // ② 阈值前拒绝：新实例（无 denyRules 干扰），第一次就拒绝（stats=0 → 走前 N 次人工分支）
+      const h2 = await mount(s + '-pre')
+      const rej2 = await callOnce(h2, req(), 'rejected')
+      check(s, '② 阈值前拒绝：rejected 透传、next 恰好 1 次',
+        rej2.result === 'rejected' && rej2.nextCalls === 1,
+        `result=${rej2.result} nextCalls=${rej2.nextCalls}`)
+      events = eventsJsonlOf(h2)
+      pendings = events.filter((e) => e.kind === 'manual-pending')
+      rejects = events.filter((e) => e.kind === 'manual-rejected')
+      check(s, '② manual-rejected 事件带 snapshotEventId 且指向本次 pending 事件 id',
+        rejects.length === 1 && pendings.length === 1 && rejects[0].snapshotEventId !== undefined &&
+        rejects[0].snapshotEventId === pendings[0].id,
+        `rejects=${JSON.stringify(rejects.map((e) => ({ id: e.id, snapRef: e.snapshotEventId, path: e.path })))} pendingIds=${JSON.stringify(pendings.map((e) => e.id))}`)
+      check(s, '② 终态 path=learned-removed（neutral 学习路径标识）',
+        rejects.length === 1 && rejects[0].path === 'learned-removed', `path=${rejects.length ? rejects[0].path : '(none)'}`)
+      // pending 事件 id 均有对应快照文件（快照按 pending 存，rejected 经 snapshotEventId 回退引用，无需自建快照）
+      check(s, '② 全部 manual-pending 事件 id 均有快照文件（rejected 经 snapshotEventId 引用，不重复落快照）',
+        pendings.every((e) => snapshotIdsOf(h2).has(String(e.id))),
+        `snapshotIds=${JSON.stringify([...snapshotIdsOf(h2)])} evIds=${JSON.stringify(pendings.map((e) => e.id))}`)
+    } else {
+      check(s, 'approval/request 处理器已挂载', false, 'handlers missing')
+    }
+  }
 } finally {
   delete process.env.DSH_HOME
   for (const dir of homes) { try { rmSync(dir, { recursive: true, force: true }) } catch {} }

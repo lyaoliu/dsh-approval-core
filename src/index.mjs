@@ -1332,7 +1332,7 @@ export default {
             delete learning.stats[key]
             delete learning.history[key]
             saveJson(LEARNING_PATH, learning)
-            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat, path: 'learned-removed' }, filesOpt))
+            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat, path: 'learned-removed', snapshotEventId: pendingEv.id }, filesOpt))
           }
           return outcome
         }
@@ -1363,7 +1363,7 @@ export default {
           delete learning.stats[key]
           delete learning.history[key]
           saveJson(LEARNING_PATH, learning)
-          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat, path: 'learned-removed' }, filesOpt))
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat, path: 'learned-removed', snapshotEventId: pendingEv.id }, filesOpt))
         }
         // cancelled/unavailable：不计数（用户未表态，下次仍人工确认）
         return outcome
