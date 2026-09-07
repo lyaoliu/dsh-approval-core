@@ -1,5 +1,5 @@
 /**
- * dsh-approval-gate — 自动审批（多级判定）持久插件 v3
+ * dsh-approval-core — 自动审批（多级判定）持久插件 v3（fork 自 dsh-approval-gate）
  *
  * 挂在审批瀑布（approval/request）最前：当会话权限预设为 auto-approve 时，
  * 按「DENY → 白名单 → denyRules → flash（SAFE/硬类别/中立计数）→ 裁决学习」管道判定越界请求。
@@ -39,7 +39,7 @@ import { DEFAULT_DANGER_PATTERNS, compileDangerPatterns, findDangerMatch } from 
 import { parseVerdict } from './classifier.mjs'
 import { DEFAULT_RISKY_THRESHOLD, shouldPrecipitate, clearLearning, extractOperationFingerprint } from './learning.mjs'
 
-const NAME = 'dsh-approval-gate'
+const NAME = 'dsh-approval-core'
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
 const DATA_DIR = join(DSH_HOME, 'auto-approve')
 const ALLOWLIST_PATH = join(DATA_DIR, 'allowlist.json')
@@ -864,7 +864,7 @@ export default {
       const runOnce = async () => {
         const controller = new AbortController()
         const timer = ctx.timeout(timeoutMs).then(() => {
-          controller.abort(`dsh-approval-gate: ${label} 超时`)
+          controller.abort(`${NAME}: ${label} 超时`)
           return 'timeout'
         })
         try {
@@ -875,7 +875,7 @@ export default {
           if (result.judgeError) throw result.judgeError
           return result
         } finally {
-          controller.abort(`dsh-approval-gate: ${label} 结束`)
+          controller.abort(`${NAME}: ${label} 结束`)
         }
       }
 
