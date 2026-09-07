@@ -329,10 +329,12 @@ window.__ModuleLoader__.load({
       const [revertedHunks, setRevertedHunks] = React.useState(null) // null=未加载 | Set
       // 整文件已撤销过？true 时全部块按钮置灰（与服务端 findRevertRecord '*' 互斥一致）
       const [wholeReverted, setWholeReverted] = React.useState(false)
-      const hunkKeyOfLines = function (h) {
+      // 块撤销键：事件id+块索引+内容指纹（与服务端 hunkKeyOf 同构）。
+      // ⚠️ 不能只用 diff 内容——撤销执行后文件变了，重算 diff 的内容键必然变化，导致已撤块重新可点。
+      const hunkKeyOfLines = function (hi, h) {
         const del = (h.lines || []).filter(function (c) { return c.type === 'del' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).join('\n')
         const add = (h.lines || []).filter(function (c) { return c.type === 'add' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).join('\n')
-        return 'hunk:' + del.length + ':' + add.length + ':' + del + '\n' + add
+        return 'ev' + eventId + ':h' + String(hi ?? '?') + ':' + del.length + ':' + add.length + ':' + del + '\n' + add
       }
 
       React.useEffect(function () {
@@ -393,13 +395,13 @@ window.__ModuleLoader__.load({
 
       // 某块是否已撤销（持久态 + 本面板生命周期 + 整文件已撤）：
       // wholeReverted=true 时所有块视为已撤销（服务端 findRevertRecord 互斥语义一致）
-      const isHunkReverted = function (h) {
+      const isHunkReverted = function (hi, h) {
         if (wholeReverted) return true
         if (!revertedHunks) return false
-        return revertedHunks.has(hunkKeyOfLines(h))
+        return revertedHunks.has(hunkKeyOfLines(eventId, hi, h))
       }
 
-      const doRevertHunk = function (h) {
+      const doRevertHunk = function (hi, h) {
         // 块级撤销：只撤这一个 hunk 的变更（del 行恢复、add 行删除），其余保留
         if (reverting || revertDone) return
         const delLines = (h.lines || []).filter(function (c) { return c.type === 'del' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text })
@@ -411,12 +413,12 @@ window.__ModuleLoader__.load({
         fetch('/api/auto-approve/revert', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sessionId: sessionId, eventId: eventId, path: path, hunk: { delLines: delLines, addLines: addLines, ctxLines: ctxLines } }),
+          body: JSON.stringify({ sessionId: sessionId, eventId: eventId, path: path, hunk: { hunkIndex: hi, delLines: delLines, addLines: addLines, ctxLines: ctxLines } }),
         }).then(function (r) { return r.json() }).then(function (res) {
           if (res && res.ok) {
             setRevertMsg('已发送该块的撤销指令')
             // 本地即时标记该块已撤销（服务端已落盘），避免面板生命周期内重复投递
-            const key = 'hunk:' + delLines.join('\n').length + ':' + addLines.join('\n').length + ':' + delLines.join('\n') + '\n' + addLines.join('\n')
+            const key = hunkKeyOfLines(eventId, hi, h)
             setRevertedHunks(function (prev) { const s = new Set(prev || []); s.add(key); return s })
           }
           else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递') }
@@ -472,10 +474,10 @@ window.__ModuleLoader__.load({
                         (h.lines || []).some(function (c) { return c.type === 'add' || c.type === 'del' })
                           ? React.createElement('div', { className: 'ag-diff-hunk-actions' },
                               (function () {
-                                const done = isHunkReverted(h)
+                                const done = isHunkReverted(hi, h)
                                 return React.createElement('button', {
                                   type: 'button', className: 'ag-set-btn',
-                                  onClick: function () { if (!done) doRevertHunk(h) },
+                                  onClick: function () { if (!done) doRevertHunk(hi, h) },
                                   disabled: done || reverting || revertDone,
                                   title: done ? '该块已撤销过' : '仅撤销这一块的改动，其余保留',
                                 }, done ? '已撤销' : '撤销此块')

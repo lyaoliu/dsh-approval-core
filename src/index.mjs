@@ -186,11 +186,14 @@ function loadEventSnapshotsWithRef(eventId) {  const direct = loadEventSnapshots
   return []
 }
 
-/** 撤销指纹：整文件='*'；块=delLines/addLines 文本拼接（顺序固定，无需 hash，行数少） */
-function hunkKeyOf(hasHunk, delJoined, addJoined) {
+/** 撤销键：整文件='*'；块=事件id+块索引+内容指纹。
+ *  ⚠️ 不能只用 diff 内容做 key——撤销执行后文件变了，重开面板重算 diff 的内容键必然不同，
+ *  导致"已撤销的块重新可点"（真机 bug 2026-09-07）。事件id+块索引是稳定标识；
+ *  内容指纹仅防同位置不同内容的误判（文件漂移后允许重新投递，语义合理）。 */
+function hunkKeyOf(hasHunk, eventId, hunkIndex, delJoined, addJoined) {
   if (!hasHunk) return '*'
-  return 'hunk:' + String(delJoined || '').length + ':' + String(addJoined || '').length
-    + ':' + String(delJoined || '') + '\n' + String(addJoined || '')
+  const fp = String(delJoined || '').length + ':' + String(addJoined || '').length
+  return 'ev' + eventId + ':h' + String(hunkIndex ?? '?') + ':' + fp
 }
 
 /** 该事件（该块）是否已执行过撤销；返回记录或 null */
@@ -965,10 +968,11 @@ export default {
                 return send(res, 400, { ok: false, error: 'hunk 格式无效（需要 delLines/addLines 数组）' })
               }
               // 重复撤销防护（服务端持久态）：同一事件+同一块只允许投递一次
-              // hunkKey：整文件='*', 块=内容指纹；已撤整文件后该事件任何块不再接受，反之亦然
+              // hunkKey：整文件='*', 块=事件id+块索引+内容指纹（见 hunkKeyOf 注释）
+              const hunkIndex = Number.parseInt(String((hunk && hunk.hunkIndex) ?? ''), 10)
               const _delJoined = hasHunk ? pick(hunk.delLines).join('\n') : ''
               const _addJoined = hasHunk ? pick(hunk.addLines).join('\n') : ''
-              const _key = hunkKeyOf(hasHunk, _delJoined, _addJoined)
+              const _key = hunkKeyOf(hasHunk, eventId, Number.isInteger(hunkIndex) ? hunkIndex : null, _delJoined, _addJoined)
               const _dup = findRevertRecord(eventId, _key)
               if (_dup) {
                 return send(res, 409, {
