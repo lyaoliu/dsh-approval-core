@@ -38,15 +38,27 @@ import { join } from 'node:path'
 import { DEFAULT_DANGER_PATTERNS, compileDangerPatterns, findDangerMatch } from './danger-patterns.mjs'
 import { parseVerdict } from './classifier.mjs'
 import { DEFAULT_RISKY_THRESHOLD, shouldPrecipitate, clearLearning, extractOperationFingerprint } from './learning.mjs'
+import { classifyOp, validateValue, normalizeItem } from './configRules.mjs'
 
 const NAME = 'dsh-approval-core'
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
-const DATA_DIR = join(DSH_HOME, 'auto-approve')
+const DEFAULT_DATA_DIR = join(DSH_HOME, 'auto-approve')
+// dataDir 允许把快照/events/审计迁到任意盘（如 D:\data\dsh-approval）；
+// allowlist.json 本身始终在 DEFAULT_DATA_DIR（它声明了 dataDir，鸡生蛋问题）
+let DATA_DIR = DEFAULT_DATA_DIR
+function resolveDataDir(cfg) {
+  const custom = cfg && typeof cfg.dataDir === 'string' ? cfg.dataDir.trim() : ''
+  if (!custom) return DEFAULT_DATA_DIR
+  // 仅接受绝对路径；相对路径视为配置错误，回退默认（fail-safe）
+  if (!/^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(custom)) return DEFAULT_DATA_DIR
+  return custom
+}
 const ALLOWLIST_PATH = join(DATA_DIR, 'allowlist.json')
-const LEARNING_PATH = join(DATA_DIR, 'learning.json')
-const AUDIT_PATH = join(DATA_DIR, 'audit.log')
-const EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
-const SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
+// 以下路径基于 DATA_DIR，在读取 allowlist.json（resolveDataDir 所需）后重算为 let
+let LEARNING_PATH = join(DATA_DIR, 'learning.json')
+let AUDIT_PATH = join(DATA_DIR, 'audit.log')
+let EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
+let SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
 
 // 快照限制：单文件 ≤256KB、每事件 ≤5 个文件
 const SNAPSHOT_MAX_BYTES = 256 * 1024
@@ -221,18 +233,9 @@ function diffLines(before, after, contextLines) {
   }
 }
 
-// 自动放行事件序号（进程内递增，重启后从现有文件恢复，避免与历史重复）
+// 自动放行事件序号（进程内递增，重启后从现有文件恢复，避免与历史重复）；
+// 恢复扫描在 DATA_DIR 解析（依赖 allowlist.json 的 dataDir）之后执行，见 reloadConfig 定义前的 initPaths()
 let eventSeq = 0
-try {
-  const existing = readFileSync(EVENTS_PATH, 'utf8')
-  for (const line of existing.split('\n')) {
-    if (!line.trim()) continue
-    try {
-      const ev = JSON.parse(line)
-      if (Number.isInteger(ev.id) && ev.id > eventSeq) eventSeq = ev.id
-    } catch { /* 跳过坏行 */ }
-  }
-} catch { /* 文件不存在：从 0 开始 */ }
 
 /** 从 justification 提取涉及的文件/路径（供审查界面展示） */
 function extractFiles(text) {
@@ -405,6 +408,7 @@ function normalizeConfig(raw) {
   cfg.riskyThreshold = cfg.riskyThreshold || DEFAULT_RISKY_THRESHOLD
   cfg.judgeTimeoutMs = cfg.judgeTimeoutMs || 20000
   cfg.learning = cfg.learning || { enabled: true }
+  cfg.classifierModel = cfg.classifierModel || null
   return cfg
 }
 
@@ -425,6 +429,25 @@ if (!config || typeof config !== 'object') {
   config = normalizeConfig(config)
   if (config.version !== 3) { config.version = 3; saveJson(ALLOWLIST_PATH, config) }
 }
+
+// dataDir 解析：allowlist.json（始终在默认目录）声明了自定义数据目录 → 全部运行时路径随之重算
+DATA_DIR = resolveDataDir(config)
+LEARNING_PATH = join(DATA_DIR, 'learning.json')
+AUDIT_PATH = join(DATA_DIR, 'audit.log')
+EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
+SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
+
+// 事件序号恢复扫描：依赖最终 EVENTS_PATH，必须在 DATA_DIR 解析后执行
+try {
+  const existing = readFileSync(EVENTS_PATH, 'utf8')
+  for (const line of existing.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const ev = JSON.parse(line)
+      if (Number.isInteger(ev.id) && ev.id > eventSeq) eventSeq = ev.id
+    } catch { /* 跳过坏行 */ }
+  }
+} catch { /* 文件不存在：从 0 开始 */ }
 
 // 热更新：每次审批前重新读盘 allowlist.json（小文件、审批频率低，无性能问题），
 // 使手动修改配置无需重启即可生效
@@ -547,10 +570,97 @@ export default {
       console.error(`[${NAME}] 注册事件 API 失败`, error)
     }
 
-    // ---- 规则管理 API（v1 安全加固：已摘除） ----
-    // 不再注册 /api/auto-approve/rules 与 /api/auto-approve/setup：
-    // 规则配置改为直接编辑 $DSH_HOME/auto-approve/allowlist.json（reloadConfig 热读），
-    // 权限预设直接在 profile 的 cordis.patch.yml 中配置。
+    // ---- 配置读写 API（v0.2.0 恢复受限版：GET 只读 / POST 分级校验） ----
+    // 写操作全部经 src/configRules.mjs 的 classifyOp（四级权限矩阵）+ validateValue（结构与范围）双重校验；
+    // 硬类别与 classifierModel 不可经 UI 修改（安全边界，编辑文件生效）。
+    let offRulesRoute = null
+    try {
+      if (ctx.webServer && typeof ctx.webServer.register === 'function') {
+        offRulesRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/rules',
+          handler: async (req, res) => {
+            const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)) }
+            if (req.method === 'GET' || req.method === 'HEAD') {
+              reloadConfig()
+              return send(200, {
+                config: {
+                  version: config.version || 3,
+                  denyKeywords: config.denyKeywords || [],
+                  allowRules: config.allowRules || [],
+                  denyRules: config.denyRules || [],
+                  hardCategories: config.hardCategories || [],
+                  riskyThreshold: config.riskyThreshold,
+                  judgeTimeoutMs: config.judgeTimeoutMs || 20000,
+                  learning: { enabled: learning.enabled !== false },
+                  dataDir: DATA_DIR,
+                  classifierModel: config.classifierModel || null,
+                },
+                learning: { stats: learning.stats || {}, history: learning.history || {} },
+                predefined: {
+                  denyKeywords: DEFAULT_DENY_KEYWORDS,
+                  allowRules: DEFAULT_ALLOW_RULES,
+                  hardCategories: DEFAULT_HARD_CATEGORIES,
+                },
+                permission: {
+                  denyKeywords: 'confirm', allowRules: 'confirm', denyRules: 'confirm',
+                  hardCategories: 'forbidden', riskyThreshold: 'free', judgeTimeoutMs: 'free',
+                },
+              })
+            }
+            if (req.method !== 'POST') { send(405, { ok: false, error: 'method not allowed' }); return }
+            let body
+            try { body = await readBody(req) } catch (e) { return send(400, { ok: false, error: '请求体无效: ' + e.message }) }
+            const op = String(body.op || ''), kind = String(body.kind || ''), value = body.value
+            // 先做结构与范围校验（不依赖权限判定，纯函数、无副作用），失败即 400
+            const check = validateValue({ kind, value, op })
+            if (!check.ok) return send(400, { ok: false, error: check.error })
+            // Task 1 评审兜底（Minor-1）：剔除预置 allowRules 中 normalizeItem 后为空对象的畸形条目，
+            // 避免其参与预置匹配；normalizeItem 复用 configRules.mjs 导出（勿内联重写）
+            const sanitizedPredefined = {}
+            for (const key of ['denyKeywords', 'allowRules', 'hardCategories']) {
+              const list = key === 'allowRules' ? DEFAULT_ALLOW_RULES : (key === 'denyKeywords' ? DEFAULT_DENY_KEYWORDS : DEFAULT_HARD_CATEGORIES)
+              sanitizedPredefined[key] = Array.isArray(list)
+                ? list.filter((item) => { const n = normalizeItem(item); return !(n && typeof n === 'object' && Object.keys(n).length === 0) })
+                : undefined
+            }
+            const verdict = classifyOp({ op, kind, value, predefined: sanitizedPredefined, hardCategories: config.hardCategories })
+            if (verdict.level === 'forbidden') {
+              audit(`CFG-DENY ${kind} op=${op} | ${verdict.reason}`)
+              return send(403, { ok: false, error: verdict.reason })
+            }
+            reloadConfig()
+            if (kind === 'riskyThreshold' || kind === 'judgeTimeoutMs') {
+              config[kind] = check.normalized
+              saveJson(ALLOWLIST_PATH, config)
+              audit(`CONFIG  ${kind} → ${check.normalized}`)
+              return send(200, { ok: true, set: true, value: check.normalized })
+            }
+            const list = config[kind]
+            if (op === 'add') {
+              if (kind === 'denyKeywords') {
+                if (!list.includes(check.normalized)) list.push(check.normalized)
+              } else {
+                const dup = list.some((r) => r && JSON.stringify(normalizeItem(r)) === JSON.stringify(check.normalized))
+                if (!dup) {
+                  check.normalized.description = '用户自定义'
+                  list.push(check.normalized)
+                }
+              }
+            } else {
+              const idx = list.findIndex((r) => JSON.stringify(normalizeItem(r)) === JSON.stringify(check.normalized))
+              if (idx >= 0) list.splice(idx, 1)
+            }
+            saveJson(ALLOWLIST_PATH, config)
+            audit(`CONFIG  ${kind} ${op} ${JSON.stringify(check.normalized).slice(0, 120)}`)
+            return send(200, { ok: true })
+          },
+        })
+        console.log(`[${NAME}] 配置 API 已注册: /api/auto-approve/rules (GET 只读 / POST 分级校验)`)
+      }
+    } catch (error) {
+      console.error(`[${NAME}] 注册配置 API 失败`, error)
+    }
 
     // ---- diff / 撤销 / 快照管理 API ----
     let offDiffRoute = null
@@ -740,6 +850,7 @@ export default {
     }
     ctx.effect(() => () => {
       if (offEventsRoute) { try { offEventsRoute() } catch (e) {} }
+      if (offRulesRoute) { try { offRulesRoute() } catch (e) {} }
       if (offDiffRoute) { try { offDiffRoute() } catch (e) {} }
       if (offRevertRoute) { try { offRevertRoute() } catch (e) {} }
       if (offSnapStatsRoute) { try { offSnapStatsRoute() } catch (e) {} }
@@ -747,6 +858,12 @@ export default {
     })
 
     const resolveModel = () => {
+      // 优先级: allowlist.classifierModel 显式配置 > 会话默认模型 > 内置回退
+      // （错误配置自然回落会话默认模型；POST /rules 不开放 classifierModel 修改，编辑文件生效，避免 UI 误配烧 token）
+      const cm = config && config.classifierModel
+      if (cm && typeof cm.provider === 'string' && cm.provider && typeof cm.model === 'string' && cm.model) {
+        return { provider: cm.provider, model: cm.model }
+      }
       try {
         const sel = agentDefaultModel && typeof agentDefaultModel.currentSelection === 'function'
           ? agentDefaultModel.currentSelection()
