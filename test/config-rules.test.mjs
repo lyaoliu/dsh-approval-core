@@ -71,3 +71,18 @@ test('validateValue: 规则对象与关键词', () => {
 test('normalizeItem: 导出且剥除 description', () => {
   assert.deepEqual(normalizeItem({ tool: 'edit', description: 'x' }), { tool: 'edit' })
 })
+
+test('安全边界加固: trim/键序/fail-closed', () => {
+  // 1. mode 带空白不可绕过
+  assert.equal(classifyOp({ op: 'add', kind: 'allowRules', value: { mode: ' danger-full-access ' }, predefined: {}, hardCategories: HARD }).level, 'forbidden')
+  // 2. predefined 缺失时 remove fail-closed
+  assert.equal(classifyOp({ op: 'remove', kind: 'denyKeywords', value: 'rm -rf', predefined: undefined, hardCategories: HARD }).level, 'forbidden')
+  assert.equal(classifyOp({ op: 'remove', kind: 'denyKeywords', value: 'rm -rf', predefined: null, hardCategories: HARD }).level, 'forbidden')
+  // 3. 键序不同仍识别为预置
+  const args = { op: 'remove', kind: 'allowRules', predefined: { allowRules: [{ mode: 'workspace-write', description: 'x' }] }, hardCategories: HARD }
+  assert.equal(classifyOp({ ...args, value: { mode: 'workspace-write', tool: '' } }).level, 'forbidden')
+  // 4. 字段带空白仍匹配预置
+  assert.equal(classifyOp({ ...args, value: { mode: ' workspace-write ' } }).level, 'forbidden')
+  // 5. normalizeItem 稳定形态
+  assert.deepEqual(normalizeItem({ mode: ' workspace-write ', description: 'x', extra: 1 }), { mode: 'workspace-write' })
+})

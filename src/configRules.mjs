@@ -23,13 +23,19 @@ export function classifyOp({ op, kind, value, predefined, hardCategories }) {
   }
   if (op === 'remove' || op === 'add') {
     if (kind === 'allowRules' && op === 'add') {
-      const mode = value && typeof value === 'object' ? String(value.mode || '') : ''
+      const mode = value && typeof value === 'object' ? String(value.mode || '').trim() : ''
       if (mode === 'danger-full-access') {
         return { level: PERMISSION_LEVELS.FORBIDDEN, reason: 'danger-full-access 不可通过 UI 加入白名单' }
       }
     }
-    if (op === 'remove' && isPredefined(kind, value, predefined)) {
-      return { level: PERMISSION_LEVELS.FORBIDDEN, reason: '预置项不可通过 UI 删除' }
+    if (op === 'remove') {
+      if (!predefined || typeof predefined !== 'object' || Array.isArray(predefined)) {
+        return { level: PERMISSION_LEVELS.FORBIDDEN, reason: '预置清单缺失,删除操作拒绝(fail-closed)' }
+      }
+      if (isPredefined(kind, value, predefined)) {
+        return { level: PERMISSION_LEVELS.FORBIDDEN, reason: '预置项不可通过 UI 删除' }
+      }
+      return { level: PERMISSION_LEVELS.CONFIRM }
     }
     return { level: PERMISSION_LEVELS.CONFIRM }
   }
@@ -42,12 +48,16 @@ function isPredefined(kind, value, predefined) {
   return list.some((item) => JSON.stringify(normalizeItem(item)) === JSON.stringify(normalizeItem(value)))
 }
 
-/** 归一化条目:字符串去首尾空白;对象剥除 description 后比较。导出供服务端路由复用。 */
+/** 归一化条目:字符串去首尾空白;对象仅保留固定键序的 tool/mode/category/contains(trim 后)字段,剥除一切未知键。导出供服务端路由复用。 */
 export function normalizeItem(item) {
   if (typeof item === 'string') return item.trim()
   if (item && typeof item === 'object') {
-    const { description, ...rest } = item
-    return rest
+    const out = {}
+    for (const k of ['tool', 'mode', 'category', 'contains']) {
+      const v = item[k]
+      if (typeof v === 'string' && v.trim()) out[k] = v.trim()
+    }
+    return out
   }
   return item
 }
