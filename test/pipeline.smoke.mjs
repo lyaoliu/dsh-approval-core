@@ -9,7 +9,7 @@
 // 人工确认路径必须恰好 1，自动放行路径必须 0。
 //
 // 用法：node test/pipeline.smoke.mjs   （任一断言失败 → 摘要 FAIL，exit 1）
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -85,8 +85,16 @@ async function mount(name, flashMode = 'neutral', preWrite = null) {
   }
 }
 
-const req = (just = NEUTRAL_JUST) => ({
-  agent: { session: { id: 's-smoke', cwd: 'C:\\nonexistent-base', events: [] } },
+const req = (just = NEUTRAL_JUST, opts = {}) => ({
+  agent: {
+    session: {
+      id: 's-smoke',
+      cwd: opts.cwd !== undefined ? opts.cwd : 'C:\\nonexistent-base',
+      // rc.1 的真实 Session 没有 events 属性，事件必须经 snapshotEvents() 获取（e1f26a4 教训）——mock 同样忠实建模
+      snapshotEvents: () => (opts.sessionEvents || []),
+    },
+  },
+  callId: opts.callId !== undefined ? opts.callId : null,
   toolName: 'pwsh',
   reason: 'escalate sandbox to danger-full-access: ' + just,
   signal: null,
@@ -111,6 +119,20 @@ async function callOnce(host, r, outcome = 'allowed-once') {
 
 const learningOf = (h) => readJson(join(h.home, 'auto-approve', 'learning.json'))
 const allowlistOf = (h) => readJson(join(h.home, 'auto-approve', 'allowlist.json'))
+const dataDirOf = (h) => {
+  const cfg = allowlistOf(h)
+  return (cfg && typeof cfg.dataDir === 'string' && cfg.dataDir) ? cfg.dataDir : join(h.home, 'auto-approve')
+}
+const eventsJsonlOf = (h) => {
+  const p = join(dataDirOf(h), 'events.jsonl')
+  if (!existsSync(p)) return []
+  return readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+}
+const snapshotIdsOf = (h) => {
+  const dir = join(dataDirOf(h), 'snapshots')
+  if (!existsSync(dir)) return new Set()
+  return new Set(readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, '')))
+}
 const setLearningFlag = (h, enabled) => {
   const cfg = allowlistOf(h) || {}
   cfg.learning = { enabled }
@@ -227,6 +249,65 @@ try {
       check(s, 'dataDir 自定义：allowlist.json 留在默认目录（声明者自身不迁移）',
         existsSync(join(h.home, 'auto-approve', 'allowlist.json')) && !existsSync(join(customDir, 'allowlist.json')))
       check(s, '默认目录无 events.jsonl 泄漏', !existsSync(join(h.home, 'auto-approve', 'events.jsonl')))
+    } else {
+      check(s, 'approval/request 处理器已挂载', false, 'handlers missing')
+    }
+  }
+
+  // ---- 场景 f：callId 回溯 tool/call 事件 → 结构化真实路径进 events.jsonl（B 层命中） ----
+  {
+    const s = 'f-callid-structured-files'
+    const h = await mount(s, 'hard') // RISKY:DELETION → 硬类别转人工（manual-pending 事件必落）
+    if (h.handlers['approval/request']) {
+      const workFile = join(tmpRoot, s + '-work.js')
+      writeFileSync(workFile, 'const a = 1\n', 'utf8')
+      const callId = 'call-f-1'
+      const r = await callOnce(h, req('更新目标文件内容', {
+        callId,
+        sessionEvents: [
+          { type: 'other/event', data: {} },
+          { type: 'tool/call', data: { callId, arguments: JSON.stringify({ file_path: workFile, content: 'x' }) } },
+        ],
+      }))
+      check(s, 'hard 类别转人工（manual-pending）',
+        r.result === 'allowed-once' && r.nextCalls === 1, `result=${r.result} nextCalls=${r.nextCalls}`)
+      const events = eventsJsonlOf(h)
+      const pending = events.filter((e) => e.kind === 'manual-pending')
+      check(s, 'events.jsonl 事件的 files == [结构化绝对路径]（callId 回溯 tool/call 命中，非 justification 提取）',
+        pending.length > 0 && pending.every((e) => Array.isArray(e.files) && e.files.length === 1 && e.files[0] === workFile),
+        `files=${JSON.stringify(pending.map((e) => e.files))}`)
+      check(s, 'manual-pending 事件已存快照（事件 id 对应 snapshots/<id>.json）',
+        pending.length > 0 && pending.every((e) => snapshotIdsOf(h).has(String(e.id))),
+        `snapshotIds=${JSON.stringify([...snapshotIdsOf(h)])} evIds=${JSON.stringify(pending.map((e) => e.id))}`)
+      const approved = events.filter((e) => e.kind === 'manual-approved')
+      check(s, 'manual-approved 终态事件 files 与 pending 一致（filesOpt 贯穿 forwardToHuman 三处调用）',
+        approved.length > 0 && approved.every((e) => Array.isArray(e.files) && e.files.length === 1 && e.files[0] === workFile),
+        `files=${JSON.stringify(approved.map((e) => e.files))}`)
+    } else {
+      check(s, 'approval/request 处理器已挂载', false, 'handlers missing')
+    }
+  }
+
+  // ---- 场景 g：bash 只读命令（ls <tmp>）→ 写特征判定不命中 → files 回退 justification 提取（C 层兜底） ----
+  {
+    const s = 'g-readonly-command-no-files'
+    const h = await mount(s, 'hard')
+    if (h.handlers['approval/request']) {
+      const callId = 'call-g-1'
+      const r = await callOnce(h, req('查看临时目录列表', {
+        callId,
+        sessionEvents: [
+          { type: 'tool/call', data: { callId, arguments: JSON.stringify({ command: `ls ${tmpRoot}` }) } },
+        ],
+      }))
+      check(s, 'hard 类别转人工（manual-pending）',
+        r.result === 'allowed-once' && r.nextCalls === 1, `result=${r.result} nextCalls=${r.nextCalls}`)
+      const events = eventsJsonlOf(h)
+      const pending = events.filter((e) => e.kind === 'manual-pending')
+      // 只读命令不提取路径：files 为空数组，或仅剩 justification 提取（回退）——绝不能出现命令里的 tmpRoot
+      const leaked = pending.some((e) => Array.isArray(e.files) && e.files.some((f) => f === tmpRoot || f.startsWith(tmpRoot)))
+      check(s, '只读命令场景：files 不含命令提取的路径（空或 justification 兜底，无假阳性）',
+        pending.length > 0 && !leaked, `files=${JSON.stringify(pending.map((e) => e.files))}`)
     } else {
       check(s, 'approval/request 处理器已挂载', false, 'handlers missing')
     }

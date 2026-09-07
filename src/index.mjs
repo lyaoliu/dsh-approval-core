@@ -101,11 +101,13 @@ function snapshotMatchesSession(absPath, sessionId) {
   } catch { return false }
 }
 
-/** 解析文件路径为绝对路径（~ → home，/ → 原样，相对 → 依次尝试会话 cwd / 进程 cwd / home，取存在的） */
+/** 解析文件路径为绝对路径（~ → home，/ 或盘符 → 原样，相对 → 依次尝试会话 cwd / 进程 cwd / home，取存在的） */
 function resolveAbsPath(p, baseDir) {
   const s = String(p || '')
   if (s.startsWith('~')) return join(homedir(), s.slice(1))
   if (s.startsWith('/')) return s
+  // Windows 盘符/UNC 绝对路径原样返回：join(baseDir, 'C:\\x') 会拼出非法路径（上游缺陷，本仓库修复）
+  if (/^(?:[a-zA-Z]:[\\/]|\\\\)/.test(s)) return s
   const candidates = [baseDir, process.cwd(), homedir()].filter((b) => typeof b === 'string' && b)
   const seen = new Set()
   for (const b of candidates) {
@@ -119,6 +121,11 @@ function resolveAbsPath(p, baseDir) {
   return join(candidates[0] || process.cwd(), s)
 }
 
+/** 判断是否为设备/伪文件路径（/dev/*、/proc/*、/sys/*）——不保存快照 */
+function isDevicePath(absPath) {
+  return /^\/dev\//.test(absPath) || /^\/proc\//.test(absPath) || /^\/sys\//.test(absPath)
+}
+
 /** 保存事件涉及文件的快照（审批时 = 改动前内容） */
 function saveEventSnapshots(eventId, files, baseDir, sessionId) {
   const list = files || []
@@ -130,8 +137,12 @@ function saveEventSnapshots(eventId, files, baseDir, sessionId) {
     const abs = resolveAbsPath(f, baseDir)
     if (seen.has(abs)) continue
     seen.add(abs)
+    // 设备/伪文件（/dev/null 等）不保存快照
+    if (isDevicePath(abs)) continue
     const content = readSnapshotFile(abs)
     if (content === null) continue
+    // 空内容快照无 diff 意义（空 vs 空 无行），跳过
+    if (content === '') continue
     snapshots.push({ path: abs, content, ts: new Date().toISOString() })
   }
   if (snapshots.length === 0) return
@@ -258,6 +269,67 @@ function extractFiles(text) {
 }
 
 /**
+ * 从 approval/request 的 callId 回溯会话日志中的 tool/call 事件，取结构化参数里的真实路径。
+ * B 层：edit/write/select 等带 file_path 字段的工具 → 解析 arguments JSON 拿确凿路径；
+ * bash/exec 等带 command 字段的工具 → 从命令文本提取路径。
+ * 未命中（无 callId / 事件缺失 / 参数解析失败）返回 null，调用方回退 justification 提取（C 层兜底）。
+ * @param {string|null|undefined} callId approval 请求关联的工具调用 ID
+ * @param {Array} events 会话事件列表（session.events）
+ * @returns {string[]|null} 结构化路径数组（未命中返回 null）
+ */
+function resolveToolCallFiles(callId, events) {
+  if (!callId || !Array.isArray(events) || events.length === 0) return null
+  let args = null
+  for (const ev of events) {
+    if (ev && ev.type === 'tool/call' && ev.data && ev.data.callId === callId) {
+      const raw = ev.data.arguments
+      try { args = typeof raw === 'string' ? JSON.parse(raw) : raw } catch { args = null }
+      break
+    }
+  }
+  if (!args || typeof args !== 'object') return null
+  const found = []
+  const seen = new Set()
+  const addPath = (v) => {
+    if (typeof v !== 'string') return
+    const seg = v.trim()
+    if (seg.length < 3 || seg.length > 1024) return
+    if (/^(https?:|data:|blob:)/i.test(seg)) return
+    if (!seg.includes('/') && !seg.includes('\\')) return
+    if (seen.has(seg)) return
+    seen.add(seg)
+    found.push(seg)
+  }
+  // 1) 显式文件字段（edit/write/read/select/patch 等）
+  for (const k of ['file_path', 'filePath', 'path', 'filename', 'file', 'target', 'source', 'dest', 'destination']) {
+    const v = args[k]
+    if (Array.isArray(v)) v.forEach(addPath)
+    else addPath(v)
+    if (found.length >= 8) break
+  }
+  // 2) bash/exec/run 等命令类：仅在命令含「写目标」时提取路径（读命令如 tail/ls/cat/grep 不产生文件改动，提取=假阳性）
+  if (found.length === 0 && (args.command || args.cmd || args.script)) {
+    const cmd = String(args.command || args.cmd || args.script || '')
+    // 剥离 stderr 抑制片段（2>/dev/null、2>&1 是读命令的常见写法，不代表写文件）
+    const cmdClean = cmd.replace(/2>>?\/dev\/null/g, ' ').replace(/2>&1/g, ' ')
+    // 写操作特征：写类命令词 / stdout 重定向 / 包管理器安装 / sed|perl -i / curl|wget 落盘
+    // （echo/printf 不在此列：纯输出不落盘，写文件场景由重定向正则覆盖，如 `echo x > file`）
+    const hasWrite = /(^|[;&|]\s*)(touch|cp|mv|rm|tee|mkdir|rmdir|install|dd|truncate|shred|chmod|chown|chgrp)\b/i.test(cmdClean)
+      || /(^|[;&|]\s*)(sed|perl|python|node|ruby)\b[^;|]*\s-i\b/i.test(cmdClean)
+      || /(^|[;&|]\s*)(curl|wget)\b[^;|]*\s(-o|--output|-O)\b/i.test(cmdClean)
+      || /(^|[;&|]\s*)(npm|pnpm|yarn|pip|pip3|gem|go|brew)\b[^;|]*\s(install|add|update|remove|uninstall)\b/i.test(cmdClean)
+      || />>?|&>/.test(cmdClean.replace(/[^<>=]/g, '').replace(/<<+/g, ''))
+    if (!hasWrite) return null
+    // 提取命令中出现的路径（写命令的参数 + 重定向目标；/dev/* 等设备由快照层过滤）
+    for (const f of extractFiles(cmd)) {
+      addPath(f)
+      if (found.length >= 8) break
+    }
+  }
+  return found.length > 0 ? found : null
+}
+
+/**
  * 记录一次审批事件（结构化，供 client 审查界面轮询展示）。
  * kind: 'auto'（自动放行）/ 'manual-pending'（转人工等待）/ 'manual-approved'（人工通过）/
  *       'manual-rejected'（人工拒绝）
@@ -275,7 +347,7 @@ function recordApprovalEvent(sessionId, toolName, mode, reason, justification, v
     reason: String(reason || '').slice(0, 600),
     justification: String(justification || '').slice(0, 400),
     verdict: String(verdict || 'auto'),
-    files: extractFiles(justification)
+    files: Array.isArray(o.files) && o.files.length > 0 ? o.files : extractFiles(justification)
   }
   if (o.kind) ev.kind = o.kind
   if (o.learningCount !== undefined) ev.learningCount = o.learningCount
@@ -287,8 +359,8 @@ function recordApprovalEvent(sessionId, toolName, mode, reason, justification, v
   try {
     ensureDataDir()
     appendFileSync(EVENTS_PATH, JSON.stringify(ev) + '\n', 'utf8')
-    // 自动放行且涉及文件 → 保存改动前快照（审批发生在写入前，此刻文件仍是旧内容）
-    if (ev.kind === 'auto' && ev.files && ev.files.length > 0) {
+    // 自动放行或转人工（pending，文件尚未改动）且涉及文件 → 保存改动前快照
+    if ((ev.kind === 'auto' || ev.kind === 'manual-pending') && ev.files && ev.files.length > 0) {
       saveEventSnapshots(ev.id, ev.files, (o && o.baseDir) || null, sessionId)
     }
   } catch (error) {
@@ -1068,15 +1140,21 @@ export default {
         const sessionId = typeof session.id === 'string' ? session.id : ''
         // 会话工作目录：相对路径快照解析的基准（DSH SessionHeader.cwd）
         const sessionCwd = (typeof session.cwd === 'string' && session.cwd) ? session.cwd : ''
+        // B 层：callId 回溯 tool/call 事件取结构化真实路径（edit/write 的 file_path / bash 的 command）。
+        // 适配（e1f26a4）：rc.1 的 Session 类没有 events 属性，事件须经 session.snapshotEvents() 获取；
+        // resolveToolCallFiles 的 events 是参数数组，不依赖 session.events。
+        // C 层兜底：未命中时 recordApprovalEvent 内部回退 extractFiles(justification)
+        const toolFiles = resolveToolCallFiles(req.callId, session.snapshotEvents())
+        const filesOpt = toolFiles ? { files: toolFiles, baseDir: sessionCwd } : { baseDir: sessionCwd }
 
         // 转人工统一处理：记录 pending → 交下游（web answerer）→ 记录终态事件（关闭提示条）
         const forwardToHuman = async (sid, tName, tMode, rsn, jst, cat, why) => {
-          recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-pending', { kind: 'manual-pending', category: cat || '', path: why })
+          recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat || '', path: why }, filesOpt))
           const out = await next()
           if (out === 'allowed-once') {
-            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-approved', { kind: 'manual-approved', category: cat || '', path: why })
+            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-approved', Object.assign({ kind: 'manual-approved', category: cat || '', path: why }, filesOpt))
           } else if (out === 'rejected') {
-            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-rejected', { kind: 'manual-rejected', category: cat || '', path: why })
+            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat || '', path: why }, filesOpt))
           }
           return out
         }
@@ -1091,7 +1169,7 @@ export default {
         const matchedRule = matchRule(config.allowRules, toolName, mode, null, justification)
         if (matchedRule) {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (rule: ${matchedRule.description || 'matched'})`)
-          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'rule', { baseDir: sessionCwd })
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'rule', filesOpt)
           return 'allowed-once'
         }
 
@@ -1100,7 +1178,7 @@ export default {
 
         if (verdict === 'safe') {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-safe${timedOut ? '，重试后' : ''})`)
-          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-safe', { baseDir: sessionCwd })
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-safe', filesOpt)
           return 'allowed-once'
         }
 
@@ -1138,7 +1216,7 @@ export default {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (rule: ${learnedRule.description || '沉淀规则'})`)
           delete learning.stats[key]
           saveJson(LEARNING_PATH, learning)
-          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'learned', { baseDir: sessionCwd })
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'learned', filesOpt)
           return 'allowed-once'
         }
 
@@ -1159,7 +1237,7 @@ export default {
             // ① 指纹确定性命中（用户确认过该操作）→ 自动放行。
             //    stats/history 保留在 learning.json 供后续同类请求继续命中（沉淀即学习态本身）
             audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-learned=${confirmed + 1}/${threshold}) | ${reason.slice(0, 100)}`)
-            recordAutoAllow(sessionId, toolName, mode, reason, justification, 'fpHit', { path: 'auto-learned', baseDir: sessionCwd })
+            recordAutoAllow(sessionId, toolName, mode, reason, justification, 'fpHit', Object.assign({ path: 'auto-learned' }, filesOpt))
             return 'allowed-once'
           }
 
@@ -1180,7 +1258,7 @@ export default {
                   audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（未沉淀）| ${reason.slice(0, 100)}`)
                 }
                 audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-same) | ${reason.slice(0, 100)}`)
-                recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same', { path: 'auto-learned', baseDir: sessionCwd })
+                recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same', Object.assign({ path: 'auto-learned' }, filesOpt))
                 return 'allowed-once'
               }
               // 判 DIFFERENT / 验证失败 → 落人工确认
@@ -1190,14 +1268,14 @@ export default {
 
           // 指纹未命中（且无样本可验证 / 判不同类）：转人工确认
           audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold}（操作未确认过）→ 人工 outcome=? | ${reason.slice(0, 120)}`)
-          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', { kind: 'manual-pending', category: cat, path: 'neutral-confirm' })
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat, path: 'neutral-confirm' }, filesOpt))
           const outcome = await next()
           audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
           if (outcome === 'allowed-once' && learning.enabled) {
             // 批准 → 记录本次操作样本（背景+指纹）；计数保持阈值位
             recordSample(key, justification)
             saveJson(LEARNING_PATH, learning)
-            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', { kind: 'manual-approved', learningCount: confirmed, threshold, category: cat, path: 'human-approved' })
+            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', Object.assign({ kind: 'manual-approved', learningCount: confirmed, threshold, category: cat, path: 'human-approved' }, filesOpt))
           } else if (outcome === 'rejected') {
             // 拒绝 → 永久人工（带指纹；提取不到则拦全部同类，拒绝从严）
             const rule = { tool: toolName, category: cat }
@@ -1211,14 +1289,14 @@ export default {
             delete learning.stats[key]
             delete learning.history[key]
             saveJson(LEARNING_PATH, learning)
-            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', { kind: 'manual-rejected', category: cat, path: 'learned-removed' })
+            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat, path: 'learned-removed' }, filesOpt))
           }
           return outcome
         }
 
         // 前 N 次 → 人工确认
         audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold} → 人工 outcome=? | ${reason.slice(0, 120)}`)
-        recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', { kind: 'manual-pending', category: cat, path: 'neutral-confirm' })
+        recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat, path: 'neutral-confirm' }, filesOpt))
         const outcome = await next()
         audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
 
@@ -1227,7 +1305,7 @@ export default {
           learning.stats[key] = confirmed + 1
           recordSample(key, justification)
           saveJson(LEARNING_PATH, learning)
-          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', { kind: 'manual-approved', learningCount: confirmed + 1, threshold, category: cat, path: 'human-approved' })
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', Object.assign({ kind: 'manual-approved', learningCount: confirmed + 1, threshold, category: cat, path: 'human-approved' }, filesOpt))
         } else if (outcome === 'rejected') {
           // 拒绝 → 升级为永久人工规则（带操作指纹；提取不到则拦全部同类，拒绝从严）
           const fingerprint = extractOperationFingerprint(justification)
@@ -1242,7 +1320,7 @@ export default {
           delete learning.stats[key]
           delete learning.history[key]
           saveJson(LEARNING_PATH, learning)
-          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', { kind: 'manual-rejected', category: cat, path: 'learned-removed' })
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat, path: 'learned-removed' }, filesOpt))
         }
         // cancelled/unavailable：不计数（用户未表态，下次仍人工确认）
         return outcome
