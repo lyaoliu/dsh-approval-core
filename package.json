@@ -1,6 +1,6 @@
 {
   "name": "dsh-approval-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "自动审批决策管道:例行放行、危险转人工(fail-safe),学习受约束。fork dsh-approval-gate 加固版",
   "type": "module",
   "main": "./src/index.mjs",
@@ -12,7 +12,7 @@
   "files": ["src", "client.js", "cordis.patch.yml", "README.md", "LICENSE"],
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/index.mjs && node --check src/danger-patterns.mjs && node --check src/classifier.mjs && node --check src/learning.mjs && node --check client.js"
+    "check": "node --check src/index.mjs && node --check src/danger-patterns.mjs && node --check src/classifier.mjs && node --check src/learning.mjs && node --check src/configRules.mjs && node --check client.js"
   },
   "keywords": ["deepseek-harness", "dsh", "dsh-plugin", "approval", "自动审批"],
   "license": "MIT",
