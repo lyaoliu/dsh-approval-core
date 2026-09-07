@@ -983,22 +983,15 @@ export default {
                 const addLines = pick(hunk.addLines).map((l) => '+ ' + l).join('\n')
                 const ctxLines = pick(hunk.ctxLines).slice(0, 3).map((l) => '  ' + l).join('\n')
                 const singlePath = typeof body.path === 'string' && body.path.trim() ? '`' + body.path.trim() + '`' : null
-                // 目标状态前置运算：从本次请求的 hunk 行重建 op 序列，反向算出"撤销后该块应有的完整文本 + 行号范围"，
-                // AI 只做替换+核对，不再脑内做反向运算。
-                const _ops = []
-                for (const t of pick(hunk.delLines)) _ops.push({ type: 'del', text: t.replace(/^- /, '') })
-                for (const t of pick(hunk.addLines)) _ops.push({ type: 'add', text: t.replace(/^\+ /, '') })
-                for (const t of pick(hunk.ctxLines).slice(0, 3)) _ops.push({ type: 'same', text: t.replace(/^  /, '') })
-                const _rev = reverseHunk(_ops)
-                const _range = (_rev.bStart !== null && _rev.bEnd !== null)
-                  ? '（当前文件的第 ' + _rev.bStart + '-' + _rev.bEnd + ' 行）' : ''
+                // 指令精度原则：主操作只有两条（恢复 del 行 / 删除 add 行），锚点仅用于定位、绝不作为写入内容。
+                // 不再提供"整体替换的目标文本"——锚点行与实际文件行的对应关系因漂移场景不可靠，混合写入会产生重复行
+                //（真机验证 2026-09-07：目标文本含锚点行导致执行方把它们追加到文件尾部）。
                 content = '请撤销以下自动审批操作中【单个改动块】的文件改动（仅撤销这一块，其余改动一律保留）：\n' +
                   '- 文件：' + (singlePath || files || '(未知)') + '\n' +
-                  (_rev.targetText
-                    ? '- 【改后目标】把该文件' + _range + '整体替换为以下文本：\n```\n' + _rev.targetText + '\n```\n' : '') +
-                  (delLines ? '- 恢复这些行（本次改动删除的原文）：\n```\n' + delLines + '\n```\n' : '') +
-                  (addLines ? '- 删除这些行（本次改动新增的内容）：\n```\n' + addLines + '\n```\n' : '') +
-                  (ctxLines ? '- 定位锚点（若行号对不上，以这些上下文行定位；定位失败先说明，不执行）：\n```\n' + ctxLines + '\n```\n' : '') +
+                  (addLines ? '- 第 1 步【删除这些行】（本次改动新增的内容，整行删除）：\n```\n' + addLines + '\n```\n' : '') +
+                  (delLines ? '- 第 2 步【在删除位置恢复这些行】（本次改动删除的原文，按原顺序插回）：\n```\n' + delLines + '\n```\n' : '') +
+                  (ctxLines ? '- 定位锚点（紧邻该块的上下文行，仅用于确认改动位置——不是要写入的内容；若定位失败先说明，不执行）：\n```\n' + ctxLines + '\n```\n' : '') +
+                  '- 完成后自查：文件中不应再出现"删除清单"里的任何行；"恢复清单"里的每一行恰好出现一次。\n' +
                   snapHint
               } else {
                 content = '请撤销以下自动审批操作带来的文件改动（恢复为审批前的状态）：\n' +
