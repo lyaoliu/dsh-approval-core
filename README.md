@@ -14,7 +14,7 @@ dsh plugin --profile web add ./dsh-approval-core
 
 规则、阈值与学习开关既可以编辑配置文件，也可以通过受限的 HTTP 接口修改：
 
-- `$DSH_HOME/auto-approve/allowlist.json`：denyKeywords / allowRules / denyRules / hardCategories / riskyThreshold / judgeTimeoutMs / learning / dataDir / classifierModel。保存后自动生效（每次审批前热读盘，无需重启）；其中 denyKeywords 的正则危险清单在插件加载时编译，变更需重启 dsh web。
+- `$DSH_HOME/auto-approve/allowlist.json`：denyKeywords / allowRules / denyRules / hardCategories / riskyThreshold / judgeTimeoutMs / learning / dataDir / classifierModel。保存后自动生效（每次审批前热读盘，无需重启；其中 dataDir 变更需重启）；其中 denyKeywords 的正则危险清单在插件加载时编译，变更需重启 dsh web。
 - 权限预设：直接在 profile 的 cordis.patch.yml 中添加 auto-approve 权限预设（预设表在配置构造时冻结，无法自动扩展）。
 
 HTTP 接口：
@@ -23,7 +23,7 @@ HTTP 接口：
 - `POST /api/auto-approve/rules` — 受限写接口，服务端两级校验：`classifyOp`（四级权限矩阵：free/confirm/forbidden）→ `validateValue`（结构与范围）。forbidden 返回 403，校验失败返回 400。`hardCategories` 永远 forbidden；删除预置项 forbidden；`danger-full-access` 不可加入白名单。
 - 其余只读查询（GET events / GET diff / GET snapshots-stats）与两种非规则操作（POST revert、POST snapshots-clear）。
 
-**dataDir**（可选，绝对路径）：把 learning.json / audit.log / events.jsonl / snapshots 迁到自定义目录（如 `D:\data\dsh-approval`）。仅接受绝对路径，相对路径视为配置错误回退默认（fail-safe）。迁移方式：手动把旧文件拷到新目录；`allowlist.json` 本身始终留在默认目录（它声明了 dataDir）。
+**dataDir**（可选，绝对路径）：把 learning.json / audit.log / events.jsonl / snapshots 迁到自定义目录（如 `D:\data\dsh-approval`）。仅接受绝对路径，相对路径视为配置错误回退默认（fail-safe）。迁移方式：手动把旧文件拷到新目录；`allowlist.json` 本身始终留在默认目录（它声明了 dataDir）。修改 dataDir 需重启 DSH Desktop 生效（路径在插件加载时解析；allowlist.json 的其它字段热读，无需重启）。
 
 ### 配置 UI 权限分级
 
