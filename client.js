@@ -398,7 +398,7 @@ window.__ModuleLoader__.load({
       const isHunkReverted = function (hi, h) {
         if (wholeReverted) return true
         if (!revertedHunks) return false
-        return revertedHunks.has(hunkKeyOfLines(eventId, hi, h))
+        return revertedHunks.has(hunkKeyOfLines(hi, h))
       }
 
       const doRevertHunk = function (hi, h) {
@@ -418,7 +418,7 @@ window.__ModuleLoader__.load({
           if (res && res.ok) {
             setRevertMsg('已发送该块的撤销指令')
             // 本地即时标记该块已撤销（服务端已落盘），避免面板生命周期内重复投递
-            const key = hunkKeyOfLines(eventId, hi, h)
+            const key = hunkKeyOfLines(hi, h)
             setRevertedHunks(function (prev) { const s = new Set(prev || []); s.add(key); return s })
           }
           else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递') }

@@ -53,3 +53,21 @@ test('文件没变时重开面板键不变(关键场景: 点撤销→未执行�
   const reopened = clientHunkKey(36, 0, first)
   assert.equal(recorded, reopened, '文件没变时 key 必须稳定，否则已撤块重新可点')
 })
+
+test('client.js 真实结构(闭包 eventId + 2 参数 hunkKeyOfLines)参数错位防护', () => {
+  // 复刻 client.js 的实际结构：eventId 来自闭包，hunkKeyOfLines 只收 (hi, h)
+  const eventId = 44
+  const hunkKeyOfLines = function (hi, h) {
+    const del = (h.lines || []).filter((c) => c.type === 'del' && typeof c.text === 'string' && c.text !== '').map((c) => c.text).join('\n')
+    const add = (h.lines || []).filter((c) => c.type === 'add' && typeof c.text === 'string' && c.text !== '').map((c) => c.text).join('\n')
+    return 'ev' + eventId + ':h' + String(hi ?? '?') + ':' + del.length + ':' + add.length
+  }
+  const h = { lines: [
+    { type: 'del', text: '这是干净测试文件 v1 头部。' },
+    { type: 'add', text: '这是干净测试文件 v2 头部【已改】。' },
+  ] }
+  // 正确调用(2 参数)：key 应为 ev44:h0:15:19
+  assert.equal(hunkKeyOfLines(0, h), 'ev44:h0:15:19')
+  // 旧 bug 调用(误传 3 参数)：eventId 被当 hi、hi 被当 h → key 完全错，导致置灰永久失效
+  assert.notEqual(hunkKeyOfLines(44, 0, h), 'ev44:h0:15:19')
+})
