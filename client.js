@@ -85,12 +85,14 @@ window.__ModuleLoader__.load({
 .ag-set-btn-primary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}
 .ag-set-btn-danger{color:var(--dsw-alias-state-error-primary)}
 .ag-set-btn-danger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger)}
+.ag-set-btn-confirm{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary)}
 .ag-set-list{flex-direction:column;gap:6px;display:flex}
 .ag-set-item{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:8px;align-items:center;gap:8px;padding:6px 10px;min-width:0;display:flex}
 .ag-set-item-label{flex:1 1 auto;min-width:0;color:var(--dsw-alias-label-primary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);word-break:break-all}
 .ag-set-item-meta{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;white-space:nowrap}
 .ag-set-item-del{flex:none;width:24px;height:24px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:transparent;border:none;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;padding:0}
 .ag-set-item-del:hover{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}
+.ag-set-item-del-confirm{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-label);width:auto;padding:0 8px;border-radius:9px}
 .ag-set-empty{color:var(--dsw-alias-label-caption);margin:0;font-size:13px;line-height:20px;padding:4px 2px}
 .ag-set-tag{box-sizing:border-box;flex:none;height:18px;border-radius:9px;align-items:center;padding:0 8px;font-size:11px;line-height:18px;display:inline-flex;letter-spacing:.02em}
 .ag-set-tag-blue{color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-tertiary)}
@@ -442,6 +444,21 @@ window.__ModuleLoader__.load({
       const [snapStats, setSnapStats] = React.useState(null) // {count, bytes} | null
       const [snapIds, setSnapIds] = React.useState(null) // Set<eventId> | null（当前存在快照的事件）
       const [diffOpen, setDiffOpen] = React.useState(null) // {eventId, path} | null
+      // 快照清理的两段式确认（替代 window.confirm，避免 Electron 焦点丢失）
+      const [pendingSnapClear, setPendingSnapClear] = React.useState(null) // 'session' | 'all' | null
+      const snapClearTimerRef = React.useRef(null)
+      const armSnapClear = function (mode) {
+        setPendingSnapClear(mode)
+        if (snapClearTimerRef.current) clearTimeout(snapClearTimerRef.current)
+        snapClearTimerRef.current = setTimeout(function () { setPendingSnapClear(null) }, 3000)
+      }
+      const disarmSnapClear = function () {
+        if (snapClearTimerRef.current) clearTimeout(snapClearTimerRef.current)
+        setPendingSnapClear(null)
+      }
+      React.useEffect(function () {
+        return function () { if (snapClearTimerRef.current) clearTimeout(snapClearTimerRef.current) }
+      }, [])
 
       const loadSnapStats = function (sid) {
         const q = sid ? ('?sessionId=' + encodeURIComponent(sid)) : ''
@@ -455,13 +472,11 @@ window.__ModuleLoader__.load({
           .catch(function () {})
       }
 
-      // 清除快照：mode='session' 仅本会话（默认），mode='all' 清全部（含其他会话，需二次确认）
+      // 清除快照：mode='session' 仅本会话（默认），mode='all' 清全部（含其他会话，需两段式二次确认）
       const doClearSnapshots = function (mode) {
+        if (pendingSnapClear !== mode) { armSnapClear(mode); return }
+        disarmSnapClear()
         const sid = mode === 'session' ? sessionId : ''
-        const msg = mode === 'all'
-          ? '确定清除【全部会话】的 diff 快照？这可能删除其他会话还没看过的改动对比记录，且不可恢复。'
-          : '确定清除【本会话】的 diff 快照？仅删除本会话审批产生的改动对比数据，不影响审批记录本身。'
-        if (!window.confirm(msg)) return
         const body = {}
         if (sid) body.sessionId = sid
         fetch('/api/auto-approve/snapshots-clear', {
@@ -512,18 +527,18 @@ window.__ModuleLoader__.load({
           React.createElement('span', { className: 'ag-snap-bar-spacer' }),
           React.createElement('button', {
             type: 'button',
-            className: 'ag-set-btn',
+            className: 'ag-set-btn' + (pendingSnapClear === 'session' ? ' ag-set-btn-confirm' : ''),
             onClick: function () { doClearSnapshots('session') },
             disabled: !snapStats || snapStats.count === 0,
             title: '仅清除本会话的 diff 快照（不影响其他会话）',
-          }, '仅清本会话'),
+          }, pendingSnapClear === 'session' ? '确认清除？' : '仅清本会话'),
           React.createElement('button', {
             type: 'button',
-            className: 'ag-set-btn ag-set-btn-danger',
+            className: 'ag-set-btn ag-set-btn-danger' + (pendingSnapClear === 'all' ? ' ag-set-btn-confirm' : ''),
             onClick: function () { doClearSnapshots('all') },
             disabled: !snapStats || snapStats.count === 0,
-            title: '清空全部会话（含其他会话未查看过的）diff 快照，需二次确认',
-          }, '清空全部'),
+            title: '清空全部会话（含其他会话未查看过的）diff 快照，点两次确认',
+          }, pendingSnapClear === 'all' ? '确认清空？' : '清空全部'),
         ),
         events === null
           ? React.createElement('div', { className: 'ag-loading' }, '加载中…')
@@ -645,6 +660,23 @@ window.__ModuleLoader__.load({
       const [newRule, setNewRule] = React.useState({ tool: '', mode: '', category: '', contains: '' })
       const [threshold, setThreshold] = React.useState('3')
       const [timeoutMs, setTimeoutMs] = React.useState('20000')
+      // 两段式行内确认（替代 window.confirm）：Electron renderer 的原生 confirm
+      // 关闭后常导致输入焦点丢失（点不动输入框，需切窗恢复）。第一次点按钮 →
+      // 按钮变「确认添加？」并 3 秒内再点才提交，超时自动回退。
+      const [pendingConfirm, setPendingConfirm] = React.useState(null) // 'denyKeyword' | 'allowRule' | null
+      const confirmTimerRef = React.useRef(null)
+      const armConfirm = function (kind) {
+        setPendingConfirm(kind)
+        if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+        confirmTimerRef.current = setTimeout(function () { setPendingConfirm(null) }, 3000)
+      }
+      const disarmConfirm = function () {
+        if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+        setPendingConfirm(null)
+      }
+      React.useEffect(function () {
+        return function () { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current) }
+      }, [])
 
       const load = function () {
         fetch('/api/auto-approve/rules', { headers: { 'cache-control': 'no-cache' } })
@@ -684,18 +716,19 @@ window.__ModuleLoader__.load({
         }).finally(function () { setBusy(false) })
       }
 
-      // 黑名单添加（confirm 级）：先弹确认框，再发请求
+      // 黑名单添加（confirm 级）：两段式行内确认（无原生模态框，避免 Electron 焦点丢失）
       const submitNewKeyword = function () {
         const kw = newKeyword.trim()
         if (!kw || busy) return
-        if (!window.confirm('确认添加黑名单词？命中后该操作将转人工。')) return
+        if (pendingConfirm !== 'denyKeyword') { armConfirm('denyKeyword'); return }
+        disarmConfirm()
         // 注：正则危险清单在插件加载时编译，关键词变更需重启 dsh web 完全生效
         api({ op: 'add', kind: 'denyKeywords', value: kw }, '已生效（黑名单正则层需重启 dsh web 完全生效）')
         setNewKeyword('')
       }
 
       // 白名单添加（confirm 级）：用户手输 danger-full-access → 前端先拦截提示（不发请求，服务端也会 403）；
-      // 其余先弹确认框再发请求
+      // 其余走两段式行内确认
       const submitNewRule = function () {
         if (busy) return
         const value = { tool: newRule.tool, mode: newRule.mode, category: newRule.category, contains: newRule.contains }
@@ -704,7 +737,8 @@ window.__ModuleLoader__.load({
           showFeedback('danger-full-access 不可通过 UI 加入白名单（请求未发送；如确需配置请编辑 allowlist.json）', false)
           return
         }
-        if (!window.confirm('确认添加白名单规则？命中后将自动放行，不再人工确认。')) return
+        if (pendingConfirm !== 'allowRule') { armConfirm('allowRule'); return }
+        disarmConfirm()
         api({ op: 'add', kind: 'allowRules', value: value })
         setNewRule({ tool: '', mode: '', category: '', contains: '' })
       }
@@ -723,9 +757,11 @@ window.__ModuleLoader__.load({
       const learnStats = snapshot.learning && snapshot.learning.stats ? snapshot.learning.stats : {}
       const learnHistory = snapshot.learning && snapshot.learning.history ? snapshot.learning.history : {}
       const statKeys = Object.keys(learnStats)
-      // 删除黑名单词（confirm 级）：自定义项删除也弹确认框；预置项按钮已 disabled（服务端 403 兜底）
+      // 删除黑名单词（confirm 级）：两段式确认（键=条目值），预置项按钮已 disabled（服务端 403 兜底）
       const removeKeyword = function (kw) {
-        if (!window.confirm('确认删除黑名单词「' + kw + '」？删除后命中该词的操作将不再强制转人工。')) return
+        const key = 'delKw:' + kw
+        if (pendingConfirm !== key) { armConfirm(key); return }
+        disarmConfirm()
         api({ op: 'remove', kind: 'denyKeywords', value: kw }, '已生效（黑名单正则层需重启 dsh web 完全生效）')
       }
 
@@ -767,9 +803,11 @@ window.__ModuleLoader__.load({
               onKeyDown: function (e) { if (e.key === 'Enter') submitNewKeyword() },
             }),
             React.createElement('button', {
-              type: 'button', className: 'ag-set-btn', disabled: busy || !newKeyword.trim(),
+              type: 'button',
+              className: 'ag-set-btn' + (pendingConfirm === 'denyKeyword' ? ' ag-set-btn-confirm' : ''),
+              disabled: busy || !newKeyword.trim(),
               onClick: submitNewKeyword,
-            }, '添加'),
+            }, pendingConfirm === 'denyKeyword' ? '确认添加？' : '添加'),
           ),
           (cfg.denyKeywords || []).length === 0
             ? React.createElement('div', { className: 'ag-set-empty' }, '无黑名单词')
@@ -780,12 +818,13 @@ window.__ModuleLoader__.load({
                     React.createElement('span', { className: 'ag-set-item-label' }, kw),
                     isPre ? React.createElement('span', { className: 'ag-set-item-meta' }, '预置') : null,
                     React.createElement('button', {
-                      type: 'button', className: 'ag-set-item-del',
+                      type: 'button',
+                      className: 'ag-set-item-del' + (pendingConfirm === 'delKw:' + kw ? ' ag-set-item-del-confirm' : ''),
                       disabled: isPre,
-                      title: isPre ? '预置项不可删除' : '删除',
+                      title: isPre ? '预置项不可删除' : (pendingConfirm === 'delKw:' + kw ? '再点一次确认删除' : '删除'),
                       'aria-label': '删除 ' + kw,
                       onClick: function () { if (!isPre) removeKeyword(kw) },
-                    }, '✕'),
+                    }, pendingConfirm === 'delKw:' + kw ? '确认?' : '✕'),
                   )
                 }),
               ),
@@ -806,9 +845,11 @@ window.__ModuleLoader__.load({
             React.createElement('input', { className: 'ag-set-input', style: { width: 110 }, placeholder: 'category（可选）', value: newRule.category, onChange: function (e) { setNewRule(Object.assign({}, newRule, { category: e.target.value })) } }),
             React.createElement('input', { className: 'ag-set-input', style: { width: 130 }, placeholder: 'contains（可选）', value: newRule.contains, onChange: function (e) { setNewRule(Object.assign({}, newRule, { contains: e.target.value })) } }),
             React.createElement('button', {
-              type: 'button', className: 'ag-set-btn ag-set-btn-primary', disabled: busy || !(newRule.tool || newRule.mode || newRule.category || newRule.contains),
+              type: 'button',
+              className: 'ag-set-btn ag-set-btn-primary' + (pendingConfirm === 'allowRule' ? ' ag-set-btn-confirm' : ''),
+              disabled: busy || !(newRule.tool || newRule.mode || newRule.category || newRule.contains),
               onClick: submitNewRule,
-            }, '添加'),
+            }, pendingConfirm === 'allowRule' ? '确认添加？' : '添加'),
           ),
           (cfg.allowRules || []).length === 0
             ? React.createElement('div', { className: 'ag-set-empty' }, '无白名单规则')
