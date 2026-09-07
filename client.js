@@ -329,12 +329,12 @@ window.__ModuleLoader__.load({
       const [revertedHunks, setRevertedHunks] = React.useState(null) // null=未加载 | Set
       // 整文件已撤销过？true 时全部块按钮置灰（与服务端 findRevertRecord '*' 互斥一致）
       const [wholeReverted, setWholeReverted] = React.useState(false)
-      // 块撤销键：事件id+块索引+内容指纹（与服务端 hunkKeyOf 同构）。
-      // ⚠️ 不能只用 diff 内容——撤销执行后文件变了，重算 diff 的内容键必然变化，导致已撤块重新可点。
+      // 块撤销键：与服务端 hunkKeyOf 严格同构 —— ev<事件>:h<块索引>:<del长度>:<add长度>
+      // （只含长度，不含内容；含内容会导致文件变化后键漂移、已撤块重新可点）
       const hunkKeyOfLines = function (hi, h) {
         const del = (h.lines || []).filter(function (c) { return c.type === 'del' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).join('\n')
         const add = (h.lines || []).filter(function (c) { return c.type === 'add' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).join('\n')
-        return 'ev' + eventId + ':h' + String(hi ?? '?') + ':' + del.length + ':' + add.length + ':' + del + '\n' + add
+        return 'ev' + eventId + ':h' + String(hi ?? '?') + ':' + del.length + ':' + add.length
       }
 
       React.useEffect(function () {

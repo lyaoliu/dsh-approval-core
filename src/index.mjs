@@ -186,11 +186,10 @@ function loadEventSnapshotsWithRef(eventId) {  const direct = loadEventSnapshots
   return []
 }
 
-/** 撤销键：整文件='*'；块=事件id+块索引+内容指纹。
- *  ⚠️ 不能只用 diff 内容做 key——撤销执行后文件变了，重开面板重算 diff 的内容键必然不同，
- *  导致"已撤销的块重新可点"（真机 bug 2026-09-07）。事件id+块索引是稳定标识；
- *  内容指纹仅防同位置不同内容的误判（文件漂移后允许重新投递，语义合理）。 */
-function hunkKeyOf(hasHunk, eventId, hunkIndex, delJoined, addJoined) {
+/** 撤销键：整文件='*'；块=ev<事件>:h<块索引>:<del长度>:<add长度>
+ *  ⚠️ 只含长度不含内容——内容会随文件变化漂移，导致"已撤销的块"在重开面板后重新可点。
+ *  事件id+块索引+长度是稳定标识；文件漂移后（长度变化）视为新差异，允许重新投递。 */
+export function hunkKeyOf(hasHunk, eventId, hunkIndex, delJoined, addJoined) {
   if (!hasHunk) return '*'
   const fp = String(delJoined || '').length + ':' + String(addJoined || '').length
   return 'ev' + eventId + ':h' + String(hunkIndex ?? '?') + ':' + fp
