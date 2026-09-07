@@ -886,12 +886,30 @@ export default {
               const snapHint = snaps.length > 0
                 ? '改动前的文件内容快照保存在 ' + snapDir + '（按事件 ID 命名），可参考恢复；请确认改动内容后执行撤销。'
                 : '注意：该事件已无可用快照（可能已被清除），请基于当前文件内容判断如何恢复原状；无法确定时请先说明再操作。'
-              const content = '请撤销以下自动审批操作带来的文件改动（恢复为审批前的状态）：\n' +
-                '- 操作：' + (event.justification || event.reason || '(无说明)') + '\n' +
-                '- 涉及文件：' + (files || '(未知)') + '\n' +
-                '- 判定：' + (event.verdict || 'auto') + '（自动放行）\n' +
-                '- 事件时间：' + (event.ts || '') + '\n' +
-                snapHint
+              // 块级撤销：body.hunk = { delLines, addLines, ctxLines }，只撤该块、其余保留
+              const hunk = body.hunk
+              const hasHunk = hunk && typeof hunk === 'object' && !Array.isArray(hunk)
+                && (Array.isArray(hunk.delLines) || Array.isArray(hunk.addLines))
+              let content
+              if (hasHunk) {
+                const pick = (v) => (Array.isArray(v) ? v : []).filter((x) => typeof x === 'string' && x !== '')
+                const delLines = pick(hunk.delLines).map((l) => '- ' + l).join('\n')
+                const addLines = pick(hunk.addLines).map((l) => '+ ' + l).join('\n')
+                const ctxLines = pick(hunk.ctxLines).slice(0, 3).map((l) => '  ' + l).join('\n')
+                content = '请撤销以下自动审批操作中【单个改动块】的文件改动（仅撤销这一块，其余改动一律保留）：\n' +
+                  '- 文件：' + (files || '(未知)') + '\n' +
+                  (delLines ? '- 恢复这些行（本次改动删除的原文）：\n```\n' + delLines + '\n```\n' : '') +
+                  (addLines ? '- 删除这些行（本次改动新增的内容）：\n```\n' + addLines + '\n```\n' : '') +
+                  (ctxLines ? '- 定位锚点（上下文行，用于确认改动位置）：\n```\n' + ctxLines + '\n```\n' : '') +
+                  snapHint
+              } else {
+                content = '请撤销以下自动审批操作带来的文件改动（恢复为审批前的状态）：\n' +
+                  '- 操作：' + (event.justification || event.reason || '(无说明)') + '\n' +
+                  '- 涉及文件：' + (files || '(未知)') + '\n' +
+                  '- 判定：' + (event.verdict || 'auto') + '（自动放行）\n' +
+                  '- 事件时间：' + (event.ts || '') + '\n' +
+                  snapHint
+              }
               const result = await sendToSession(sessionId, content)
               audit(`REVERT  event=${eventId} session=${sessionId} via=${result.via || 'none'} | ${event.justification ? event.justification.slice(0, 80) : ''}`)
               send(res, result.ok ? 200 : 500, result)

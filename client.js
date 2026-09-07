@@ -128,6 +128,7 @@ window.__ModuleLoader__.load({
 .ag-diff-line-no{flex:none;width:52px;color:var(--dsw-alias-label-caption);text-align:right;user-select:none;font-variant-numeric:tabular-nums}
 .ag-diff-text{flex:1 1 auto;min-width:0}
 .ag-diff-hunk-sep{box-sizing:border-box;flex:none;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;padding:2px 8px;border-top:1px solid var(--dsw-alias-border-l1);border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);margin:2px 0;user-select:none}
+.ag-diff-hunk-actions{flex:none;display:flex;justify-content:flex-end;padding:2px 8px 6px}
 .ag-diff-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px;padding:16px;text-align:center}
 .ag-diff-foot{box-sizing:border-box;flex:none;border-top:1px solid var(--dsw-alias-border-l2);padding:10px 14px;display:flex;align-items:center;gap:8px;justify-content:flex-end}
 .ag-file-chip-snap{cursor:pointer;background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}
@@ -361,6 +362,25 @@ window.__ModuleLoader__.load({
         })
       }
 
+      const doRevertHunk = function (h) {
+        // 块级撤销：只撤这一个 hunk 的变更（del 行恢复、add 行删除），其余保留
+        if (reverting || revertDone) return
+        const delLines = (h.lines || []).filter(function (c) { return c.type === 'del' }).map(function (c) { return c.text })
+        const addLines = (h.lines || []).filter(function (c) { return c.type === 'add' }).map(function (c) { return c.text })
+        const ctxLines = (h.lines || []).filter(function (c) { return c.type === 'same' }).map(function (c) { return c.text }).slice(0, 3)
+        if (delLines.length === 0 && addLines.length === 0) return
+        setReverting(true)
+        setRevertMsg(null)
+        fetch('/api/auto-approve/revert', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId: sessionId, eventId: eventId, hunk: { delLines: delLines, addLines: addLines, ctxLines: ctxLines } }),
+        }).then(function (r) { return r.json() }).then(function (res) {
+          if (res && res.ok) { setRevertMsg('该块的撤销指令已发送'); setRevertDone(true) }
+          else { setRevertMsg((res && res.error) || '发送失败') }
+        }).catch(function (e) { setRevertMsg('发送失败：' + String((e && e.message) || e)) }).finally(function () { setReverting(false) })
+      }
+
       const changedLines = data ? (data.changedLines || []) : []
       const hunks = data && Array.isArray(data.hunks) ? data.hunks : null
       const stats = data ? (data.stats || {}) : null
@@ -406,6 +426,16 @@ window.__ModuleLoader__.load({
                             React.createElement('span', { className: 'ag-diff-text' }, c.text),
                           )
                         }),
+                        (h.lines || []).some(function (c) { return c.type === 'add' || c.type === 'del' })
+                          ? React.createElement('div', { className: 'ag-diff-hunk-actions' },
+                              React.createElement('button', {
+                                type: 'button', className: 'ag-set-btn',
+                                onClick: function () { doRevertHunk(h) },
+                                disabled: reverting || revertDone,
+                                title: '仅撤销这一块的改动，其余保留',
+                              }, '撤销此块'),
+                            )
+                          : null,
                       )
                     })
                   : changedLines.length === 0
