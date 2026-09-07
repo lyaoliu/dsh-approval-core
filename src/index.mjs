@@ -165,6 +165,26 @@ function loadEventSnapshots(eventId) {
   } catch { return [] }
 }
 
+/** 读取事件快照（带回退）：approved 事件本身无快照文件（快照挂在其 pending 事件 id 下），
+ *  直接查不到时扫描 events.jsonl 找该事件的 snapshotEventId 字段，用它再查一次。 */
+function loadEventSnapshotsWithRef(eventId) {
+  const direct = loadEventSnapshots(eventId)
+  if (direct.length > 0) return direct
+  try {
+    const text = readFileSync(EVENTS_PATH, 'utf8')
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const ev = JSON.parse(line)
+        if (ev && ev.id === eventId && ev.snapshotEventId !== undefined) {
+          return loadEventSnapshots(ev.snapshotEventId)
+        }
+      } catch { /* 跳过坏行 */ }
+    }
+  } catch { /* events 文件不存在 */ }
+  return []
+}
+
 /** 逐行 diff：只返回变更行（add/del） */
 function diffLines(before, after, contextLines) {
   const CTX = (typeof contextLines === 'number' && contextLines >= 0) ? contextLines : 5
@@ -356,6 +376,9 @@ function recordApprovalEvent(sessionId, toolName, mode, reason, justification, v
   // path：判定路径标识（deny / deny-rule / hard-category / unknown-category / flash-failed /
   //       neutral-confirm / auto-learned（学习自动放行：fp-hit 或 flash 同类）/ human-approved / learned-removed）
   if (o.path) ev.path = o.path
+  // snapshotEventId：终态事件（approved 等）指向其 pending 事件的 id——快照文件挂在 pending 事件 id 下，
+  // 用户在批准后的终态事件上点文件 chip 时，diff 端点据此回退查 pending 的快照
+  if (o.snapshotEventId !== undefined) ev.snapshotEventId = o.snapshotEventId
   try {
     ensureDataDir()
     appendFileSync(EVENTS_PATH, JSON.stringify(ev) + '\n', 'utf8')
@@ -803,7 +826,8 @@ export default {
               const eventId = Number.parseInt(url.searchParams.get('eventId') || '', 10)
               const path = url.searchParams.get('path') || ''
               if (!Number.isInteger(eventId) || !path) return send(res, 400, { ok: false, error: 'eventId/path 必填' })
-              const snaps = loadEventSnapshots(eventId)
+              // 快照回退：eventId 直接无快照时（如 approved 终态事件），按其 snapshotEventId 指向的 pending 事件查
+              const snaps = loadEventSnapshotsWithRef(eventId)
               // client 传的是 justification 中的原始路径（可能绝对/相对/裸文件名），多基准对齐快照的绝对路径
               const base = resolveAbsPath(path)
               const baseName = String(path).split('/').pop()
@@ -857,7 +881,8 @@ export default {
               const files = (event.files || []).map((f) => '`' + f + '`').join('、')
               const snapDir = SNAPSHOTS_DIR
               // 快照缺失保护：快照被清除后，撤销指令应如实告知 agent，避免其盲目恢复
-              const snaps = loadEventSnapshots(eventId)
+              // （回退查 snapshotEventId：approved 事件的快照挂在其 pending 事件 id 下）
+              const snaps = loadEventSnapshotsWithRef(eventId)
               const snapHint = snaps.length > 0
                 ? '改动前的文件内容快照保存在 ' + snapDir + '（按事件 ID 命名），可参考恢复；请确认改动内容后执行撤销。'
                 : '注意：该事件已无可用快照（可能已被清除），请基于当前文件内容判断如何恢复原状；无法确定时请先说明再操作。'
@@ -1163,14 +1188,16 @@ export default {
         const toolFiles = resolveToolCallFiles(req.callId, session.snapshotEvents())
         const filesOpt = toolFiles ? { files: toolFiles, baseDir: sessionCwd } : { baseDir: sessionCwd }
 
-        // 转人工统一处理：记录 pending → 交下游（web answerer）→ 记录终态事件（关闭提示条）
+        // 转人工统一处理：记录 pending → 交下游（web answerer）→ 记录终态事件（关闭提示条）。
+        // 终态事件带 snapshotEventId 指回 pending 事件——快照文件挂在 pending 事件 id 下，
+        // 用户在批准后的终态事件上点文件 chip 时 diff/撤销端点据此回退查快照
         const forwardToHuman = async (sid, tName, tMode, rsn, jst, cat, why) => {
-          recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat || '', path: why }, filesOpt))
+          const pendingEv = recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat || '', path: why }, filesOpt))
           const out = await next()
           if (out === 'allowed-once') {
-            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-approved', Object.assign({ kind: 'manual-approved', category: cat || '', path: why }, filesOpt))
+            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-approved', Object.assign({ kind: 'manual-approved', category: cat || '', path: why, snapshotEventId: pendingEv.id }, filesOpt))
           } else if (out === 'rejected') {
-            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat || '', path: why }, filesOpt))
+            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-rejected', Object.assign({ kind: 'manual-rejected', category: cat || '', path: why, snapshotEventId: pendingEv.id }, filesOpt))
           }
           return out
         }
@@ -1284,14 +1311,14 @@ export default {
 
           // 指纹未命中（且无样本可验证 / 判不同类）：转人工确认
           audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold}（操作未确认过）→ 人工 outcome=? | ${reason.slice(0, 120)}`)
-          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat, path: 'neutral-confirm' }, filesOpt))
+          const pendingEv = recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat, path: 'neutral-confirm' }, filesOpt))
           const outcome = await next()
           audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
           if (outcome === 'allowed-once' && learning.enabled) {
             // 批准 → 记录本次操作样本（背景+指纹）；计数保持阈值位
             recordSample(key, justification)
             saveJson(LEARNING_PATH, learning)
-            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', Object.assign({ kind: 'manual-approved', learningCount: confirmed, threshold, category: cat, path: 'human-approved' }, filesOpt))
+            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', Object.assign({ kind: 'manual-approved', learningCount: confirmed, threshold, category: cat, path: 'human-approved', snapshotEventId: pendingEv.id }, filesOpt))
           } else if (outcome === 'rejected') {
             // 拒绝 → 永久人工（带指纹；提取不到则拦全部同类，拒绝从严）
             const rule = { tool: toolName, category: cat }
@@ -1312,7 +1339,7 @@ export default {
 
         // 前 N 次 → 人工确认
         audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold} → 人工 outcome=? | ${reason.slice(0, 120)}`)
-        recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat, path: 'neutral-confirm' }, filesOpt))
+        const pendingEv = recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', Object.assign({ kind: 'manual-pending', category: cat, path: 'neutral-confirm' }, filesOpt))
         const outcome = await next()
         audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
 
@@ -1321,7 +1348,7 @@ export default {
           learning.stats[key] = confirmed + 1
           recordSample(key, justification)
           saveJson(LEARNING_PATH, learning)
-          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', Object.assign({ kind: 'manual-approved', learningCount: confirmed + 1, threshold, category: cat, path: 'human-approved' }, filesOpt))
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', Object.assign({ kind: 'manual-approved', learningCount: confirmed + 1, threshold, category: cat, path: 'human-approved', snapshotEventId: pendingEv.id }, filesOpt))
         } else if (outcome === 'rejected') {
           // 拒绝 → 升级为永久人工规则（带操作指纹；提取不到则拦全部同类，拒绝从严）
           const fingerprint = extractOperationFingerprint(justification)

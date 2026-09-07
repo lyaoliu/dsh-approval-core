@@ -130,8 +130,8 @@ window.__ModuleLoader__.load({
 .ag-diff-hunk-sep{box-sizing:border-box;flex:none;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;padding:2px 8px;border-top:1px solid var(--dsw-alias-border-l1);border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);margin:2px 0;user-select:none}
 .ag-diff-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px;padding:16px;text-align:center}
 .ag-diff-foot{box-sizing:border-box;flex:none;border-top:1px solid var(--dsw-alias-border-l2);padding:10px 14px;display:flex;align-items:center;gap:8px;justify-content:flex-end}
-.ag-file-chip-snap{cursor:pointer;border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary)}
-.ag-file-chip-snap:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.ag-file-chip-snap{cursor:pointer;background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}
+.ag-file-chip-snap:hover{background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary-foreground)}
 .ag-snap-bar{flex:none;display:flex;align-items:center;gap:8px;padding:6px 14px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;flex-wrap:wrap}
 .ag-snap-bar b{color:var(--dsw-alias-label-secondary);font-weight:500}
 .ag-snap-bar-spacer{flex:1 1 auto}
@@ -369,7 +369,7 @@ window.__ModuleLoader__.load({
         React.createElement('div', { className: 'ag-diff-panel' },
           React.createElement('div', { className: 'ag-diff-head' },
             React.createElement('div', { className: 'ag-diff-title' },
-              React.createElement('span', null, '文件改动对比'),
+              React.createElement('span', null, '文件改动对比（事件 #' + eventId + '）'),
               React.createElement('button', { type: 'button', className: 'ag-notice-close', title: '关闭', 'aria-label': '关闭', onClick: onClose }, '✕'),
             ),
             React.createElement('div', { className: 'ag-diff-path' }, path),
@@ -553,7 +553,8 @@ window.__ModuleLoader__.load({
                   // pending（等待中）不在视图展示终态记录（提示条负责）
                   if (kind === 'manual-pending') return null
                   const files = Array.isArray(ev.files) ? ev.files : []
-                  const hasSnap = snapIds !== null && snapIds.has(String(ev.id))
+                  // 快照挂在 pending 事件 id 下：本事件无快照时回退查其 snapshotEventId 指向的 pending 事件
+                  const hasSnap = snapIds !== null && (snapIds.has(String(ev.id)) || (ev.snapshotEventId !== undefined && snapIds.has(String(ev.snapshotEventId))))
                   let tagText = ''
                   let tagCls = 'ag-tag'
                   let glyph = React.createElement(GlyphCheck, null)
@@ -596,7 +597,8 @@ window.__ModuleLoader__.load({
                                 chipProps.className += ' ag-file-chip-snap'
                                 chipProps.title = '查看该文件改动对比'
                                 chipProps.role = 'button'
-                                chipProps.onClick = function () { setDiffOpen({ eventId: ev.id, path: f }) }
+                                // 快照按 pending 事件 id 存：有 snapshotEventId 的事件（approved 等）传它查 diff
+                                chipProps.onClick = function () { setDiffOpen({ eventId: ev.snapshotEventId !== undefined ? ev.snapshotEventId : ev.id, path: f }) }
                               }
                               // 只显示文件名本身（去重后同一文件只有一个 chip）
                               const fname = String(f).split('/').pop()

@@ -283,6 +283,12 @@ try {
       check(s, 'manual-approved 终态事件 files 与 pending 一致（filesOpt 贯穿 forwardToHuman 三处调用）',
         approved.length > 0 && approved.every((e) => Array.isArray(e.files) && e.files.length === 1 && e.files[0] === workFile),
         `files=${JSON.stringify(approved.map((e) => e.files))}`)
+      check(s, 'manual-approved 事件带 snapshotEventId 且指向 pending 事件 id（diff/撤销按终态事件回退查快照）',
+        approved.length > 0 && approved.every((e) => {
+          const mine = pending.find((p) => p.tool === e.tool && p.ts <= e.ts && p.sessionId === e.sessionId)
+          return e.snapshotEventId !== undefined && mine !== undefined && e.snapshotEventId === mine.id
+        }),
+        `approved=${JSON.stringify(approved.map((e) => ({ id: e.id, snapRef: e.snapshotEventId })))} pendingIds=${JSON.stringify(pending.map((e) => e.id))}`)
     } else {
       check(s, 'approval/request 处理器已挂载', false, 'handlers missing')
     }
