@@ -72,6 +72,15 @@ test('normalizeItem: 导出且剥除 description', () => {
   assert.deepEqual(normalizeItem({ tool: 'edit', description: 'x' }), { tool: 'edit' })
 })
 
+test('dataDir: set → confirm + 绝对路径校验', () => {
+  assert.equal(classifyOp({ op: 'set', kind: 'dataDir', value: 'D:\\data\\x', predefined: {}, hardCategories: HARD }).level, 'confirm')
+  assert.equal(classifyOp({ op: 'add', kind: 'dataDir', value: 'D:\\data\\x', predefined: {}, hardCategories: HARD }).level, 'forbidden')
+  assert.equal(validateValue({ kind: 'dataDir', op: 'set', value: 'D:\\data\\x' }).ok, true)
+  assert.equal(validateValue({ kind: 'dataDir', op: 'set', value: 'relative/path' }).ok, false)
+  assert.equal(validateValue({ kind: 'dataDir', op: 'set', value: 'C:' }).ok, false)
+  assert.equal(validateValue({ kind: 'dataDir', op: 'set', value: '  D:\\data\\x  ' }).normalized, 'D:\\data\\x')
+})
+
 test('安全边界加固: trim/键序/fail-closed', () => {
   // 1. mode 带空白不可绕过
   assert.equal(classifyOp({ op: 'add', kind: 'allowRules', value: { mode: ' danger-full-access ' }, predefined: {}, hardCategories: HARD }).level, 'forbidden')

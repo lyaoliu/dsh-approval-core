@@ -716,6 +716,14 @@ export default {
               audit(`CONFIG  ${kind} → ${check.normalized}`)
               return send(200, { ok: true, set: true, value: check.normalized })
             }
+            // dataDir（confirm 级，启动期字段）：写回 allowlist.json，重启后 initPaths 重算运行时目录。
+            // 注：saveJson 的 dataDir 保留逻辑仅在 data.dataDir===undefined 时从磁盘合并，此处内存值已是新值，会原样落盘。
+            if (kind === 'dataDir') {
+              config.dataDir = check.normalized
+              saveJson(ALLOWLIST_PATH, config)
+              audit(`CONFIG  dataDir → ${check.normalized}（重启生效）`)
+              return send(200, { ok: true, needRestart: true, value: check.normalized })
+            }
             const list = config[kind]
             if (op === 'add') {
               if (kind === 'denyKeywords') {

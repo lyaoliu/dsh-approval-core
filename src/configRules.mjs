@@ -14,9 +14,14 @@ const NUMERIC_KINDS = new Set(['riskyThreshold', 'judgeTimeoutMs'])
 
 /** 判定一个配置写操作的权限级别。predefined: {denyKeywords?, allowRules?, hardCategories?} */
 export function classifyOp({ op, kind, value, predefined, hardCategories }) {
-  const KNOWN = new Set(['denyKeywords', 'allowRules', 'denyRules', 'hardCategories', 'riskyThreshold', 'judgeTimeoutMs'])
+  const KNOWN = new Set(['denyKeywords', 'allowRules', 'denyRules', 'hardCategories', 'riskyThreshold', 'judgeTimeoutMs', 'dataDir'])
   if (!KNOWN.has(kind)) return { level: PERMISSION_LEVELS.FORBIDDEN, reason: `未知配置类型: ${kind}` }
   if (kind === 'hardCategories') return { level: PERMISSION_LEVELS.FORBIDDEN, reason: '硬风险类别不可通过 UI 修改(安全边界)' }
+  // dataDir 是启动期字段：仅支持 set，且改后需重启生效 → confirm 级（需 UI 确认，不走 free）
+  if (kind === 'dataDir') {
+    if (op !== 'set') return { level: PERMISSION_LEVELS.FORBIDDEN, reason: 'dataDir 仅支持 set' }
+    return { level: PERMISSION_LEVELS.CONFIRM }
+  }
   if (NUMERIC_KINDS.has(kind)) {
     if (op !== 'set') return { level: PERMISSION_LEVELS.FORBIDDEN, reason: `${kind} 仅支持 set` }
     return { level: PERMISSION_LEVELS.FREE }
@@ -69,6 +74,15 @@ const VALUE_RULES = {
 
 /** 结构与范围校验;通过时返回 normalized(去除首尾空白等) */
 export function validateValue({ kind, value, op }) {
+  if (kind === 'dataDir') {
+    if (op !== 'set') return { ok: false, error: 'dataDir 仅支持 set' }
+    if (typeof value !== 'string') return { ok: false, error: 'dataDir 必须是字符串路径' }
+    const s = value.trim()
+    if (s.length < 3 || s.length > 260) return { ok: false, error: 'dataDir 长度需在 3-260 字符之间' }
+    // 绝对路径：盘符（C:\ 或 C:/）、UNC（\\server\share）或 POSIX 根（/data/...）
+    if (!/^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(s)) return { ok: false, error: 'dataDir 必须是绝对路径（如 D:\data\dsh-approval 或 /data/dsh-approval）' }
+    return { ok: true, normalized: s }
+  }
   if (NUMERIC_KINDS.has(kind)) {
     const rule = VALUE_RULES[kind]
     if (!rule.ops.includes(op)) return { ok: false, error: `${kind} 仅支持 ${rule.ops.join('/')}` }

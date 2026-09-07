@@ -663,6 +663,7 @@ window.__ModuleLoader__.load({
       const [newRule, setNewRule] = React.useState({ tool: '', mode: '', category: '', contains: '' })
       const [threshold, setThreshold] = React.useState('3')
       const [timeoutMs, setTimeoutMs] = React.useState('20000')
+      const [dataDirInput, setDataDirInput] = React.useState('')
       // 两段式行内确认（替代 window.confirm）：Electron renderer 的原生 confirm
       // 关闭后常导致输入焦点丢失（点不动输入框，需切窗恢复）。第一次点按钮 →
       // 按钮变「确认添加？」并 3 秒内再点才提交，超时自动回退。
@@ -689,6 +690,7 @@ window.__ModuleLoader__.load({
               setSnapshot(data)
               setThreshold(String(data.config.riskyThreshold))
               setTimeoutMs(String(data.config.judgeTimeoutMs))
+              setDataDirInput(data.config.dataDir || '')
               setError(null)
             } else {
               setError('加载规则失败：' + JSON.stringify(data).slice(0, 200))
@@ -744,6 +746,15 @@ window.__ModuleLoader__.load({
         disarmConfirm()
         api({ op: 'add', kind: 'allowRules', value: value })
         setNewRule({ tool: '', mode: '', category: '', contains: '' })
+      }
+
+      // 数据目录（confirm 级，启动期字段）：两段式行内确认；服务端校验绝对路径，重启后生效
+      const submitDataDir = function () {
+        const value = dataDirInput.trim()
+        if (!value || busy) return
+        if (pendingConfirm !== 'dataDir') { armConfirm('dataDir'); return }
+        disarmConfirm()
+        api({ op: 'set', kind: 'dataDir', value: value }, '已保存，重启 DSH Desktop 后生效')
       }
 
       if (!snapshot) {
@@ -976,16 +987,33 @@ window.__ModuleLoader__.load({
               ),
         ),
 
-        // ---- 数据目录与分类模型（只读信息卡） ----
+        // ---- 数据目录（confirm 级，可编辑：改后需重启生效）与分类模型（只读信息卡） ----
         React.createElement('div', { className: 'ag-set-card' },
           React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' }, '数据目录与分类模型'),
-            React.createElement('p', { className: 'ag-set-card-sub' }, '数据目录：' + (cfg.dataDir || '（未知）')),
+            React.createElement('div', { className: 'ag-set-card-title' },
+              React.createElement('span', { className: 'ag-set-stage' }, 'confirm · 重启生效'),
+              '数据目录与分类模型'),
             React.createElement('p', { className: 'ag-set-card-sub' },
-              '分类模型：' + (cfg.classifierModel || '会话默认模型（未单独配置）')),
-            React.createElement('p', { className: 'ag-set-card-sub' },
-              '修改方法：编辑数据目录下的 allowlist.json 后重启 dsh web 生效（数据目录、分类模型与黑名单正则清单均在插件加载时确定）。')),
-        ),
+              '数据目录是启动期字段：声明快照/事件/审计/学习数据的存放目录，修改保存后需重启 DSH Desktop 生效。')),
+          React.createElement('div', { className: 'ag-set-row' },
+            React.createElement('span', { className: 'ag-set-item-meta' }, '数据目录：'),
+            React.createElement('input', {
+              className: 'ag-set-input', style: { width: 320 },
+              placeholder: '如 D:\\data\\dsh-approval（绝对路径）',
+              value: dataDirInput,
+              onChange: function (e) { setDataDirInput(e.target.value) },
+              onKeyDown: function (e) { if (e.key === 'Enter') submitDataDir() },
+            }),
+            React.createElement('button', {
+              type: 'button',
+              className: 'ag-set-btn' + (pendingConfirm === 'dataDir' ? ' ag-set-btn-confirm' : ''),
+              disabled: busy || !dataDirInput.trim(),
+              onClick: submitDataDir,
+            }, pendingConfirm === 'dataDir' ? '确认保存？' : '保存'),
+          ),
+          React.createElement('p', { className: 'ag-set-card-sub' },
+            '分类模型：' + (cfg.classifierModel || '会话默认模型（未单独配置）') +
+            '（只读，如需修改请编辑数据目录下的 allowlist.json）')),
 
         // ---- 反馈 ----
         feedback
