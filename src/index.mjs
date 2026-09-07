@@ -59,6 +59,8 @@ let LEARNING_PATH = join(DATA_DIR, 'learning.json')
 let AUDIT_PATH = join(DATA_DIR, 'audit.log')
 let EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
 let SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
+// 已执行撤销记录（持久态，防止重复投递）：reverts.jsonl，每行 {eventId, hunkKey, ts}
+// hunkKey：整文件撤销='*', 块撤销=delLines+addLines 内容拼接的稳定指纹
 
 // 快照限制：单文件 ≤256KB、每事件 ≤5 个文件
 const SNAPSHOT_MAX_BYTES = 256 * 1024
@@ -167,8 +169,7 @@ function loadEventSnapshots(eventId) {
 
 /** 读取事件快照（带回退）：approved 事件本身无快照文件（快照挂在其 pending 事件 id 下），
  *  直接查不到时扫描 events.jsonl 找该事件的 snapshotEventId 字段，用它再查一次。 */
-function loadEventSnapshotsWithRef(eventId) {
-  const direct = loadEventSnapshots(eventId)
+function loadEventSnapshotsWithRef(eventId) {  const direct = loadEventSnapshots(eventId)
   if (direct.length > 0) return direct
   try {
     const text = readFileSync(EVENTS_PATH, 'utf8')
@@ -183,6 +184,38 @@ function loadEventSnapshotsWithRef(eventId) {
     }
   } catch { /* events 文件不存在 */ }
   return []
+}
+
+/** 撤销指纹：整文件='*'；块=delLines/addLines 文本拼接（顺序固定，无需 hash，行数少） */
+function hunkKeyOf(hasHunk, delJoined, addJoined) {
+  if (!hasHunk) return '*'
+  return 'hunk:' + String(delJoined || '').length + ':' + String(addJoined || '').length
+    + ':' + String(delJoined || '') + '\n' + String(addJoined || '')
+}
+
+/** 该事件（该块）是否已执行过撤销；返回记录或 null */
+function findRevertRecord(eventId, hunkKey) {
+  const path = join(DATA_DIR, 'reverts.jsonl')
+  try {
+    const text = readFileSync(path, 'utf8')
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const r = JSON.parse(line)
+        if (r && r.eventId === eventId && (hunkKey === '*' || r.hunkKey === '*' || r.hunkKey === hunkKey)) return r
+      } catch { /* 跳过坏行 */ }
+    }
+  } catch { /* 文件不存在=未撤销过 */ }
+  return null
+}
+
+/** 记录一次已执行撤销（追加式；失败不阻断主流程） */
+function recordRevert(eventId, hunkKey) {
+  try {
+    ensureDataDir()
+    appendFileSync(join(DATA_DIR, 'reverts.jsonl'),
+      JSON.stringify({ eventId, hunkKey, ts: new Date().toISOString() }) + '\n', 'utf8')
+  } catch { /* 记录失败不影响主流程 */ }
 }
 
 /** 逐行 diff：只返回变更行（add/del） */
@@ -902,6 +935,19 @@ export default {
               if (hunk !== undefined && !hasHunk) {
                 return send(res, 400, { ok: false, error: 'hunk 格式无效（需要 delLines/addLines 数组）' })
               }
+              // 重复撤销防护（服务端持久态）：同一事件+同一块只允许投递一次
+              // hunkKey：整文件='*', 块=内容指纹；已撤整文件后该事件任何块不再接受，反之亦然
+              const _delJoined = hasHunk ? pick(hunk.delLines).join('\n') : ''
+              const _addJoined = hasHunk ? pick(hunk.addLines).join('\n') : ''
+              const _key = hunkKeyOf(hasHunk, _delJoined, _addJoined)
+              const _dup = findRevertRecord(eventId, _key)
+              if (_dup) {
+                return send(res, 409, {
+                  ok: false,
+                  error: '该撤销已于 ' + (_dup.ts || '(未知时间)') + ' 执行过，不再重复投递',
+                  duplicate: true, ts: _dup.ts || null,
+                })
+              }
               let content
               if (hasHunk) {
                 const delLines = pick(hunk.delLines).map((l) => '- ' + l).join('\n')
@@ -923,6 +969,7 @@ export default {
                   snapHint
               }
               const result = await sendToSession(sessionId, content)
+              if (result.ok) recordRevert(eventId, _key)
               audit(`REVERT  event=${eventId} session=${sessionId} via=${result.via || 'none'} | ${event.justification ? event.justification.slice(0, 80) : ''}`)
               send(res, result.ok ? 200 : 500, result)
             } catch (e) {

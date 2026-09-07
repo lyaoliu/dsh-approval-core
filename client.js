@@ -341,6 +341,7 @@ window.__ModuleLoader__.load({
 
       const doRevert = function () {
         // 防重复：同一事件只允许投递一次撤销指令（v0.5.0 事故中同一 event 被重复撤销 4 次）
+        // 服务端另有 reverts.jsonl 持久去重（409），前端这里只处理本面板生命周期。
         if (reverting || revertDone) return
         setReverting(true)
         setRevertMsg(null)
@@ -351,6 +352,10 @@ window.__ModuleLoader__.load({
         }).then(function (r) { return r.json() }).then(function (res) {
           if (res && res.ok) {
             setRevertMsg('撤销指令已发送到对话框，AI 将按指令恢复文件')
+            setRevertDone(true)
+          } else if (res && res.duplicate) {
+            // 服务端 409：该撤销已执行过。置 done 防再点，文案如实告知。
+            setRevertMsg(res.error || '该撤销已执行过，不再重复投递')
             setRevertDone(true)
           } else {
             setRevertMsg((res && res.error) || '发送失败')
@@ -377,6 +382,7 @@ window.__ModuleLoader__.load({
           body: JSON.stringify({ sessionId: sessionId, eventId: eventId, path: path, hunk: { delLines: delLines, addLines: addLines, ctxLines: ctxLines } }),
         }).then(function (r) { return r.json() }).then(function (res) {
           if (res && res.ok) { setRevertMsg('已发送该块的撤销指令'); setRevertDone(true) }
+          else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递'); setRevertDone(true) }
           else { setRevertMsg((res && res.error) || '发送失败') }
         }).catch(function (e) { setRevertMsg('发送失败：' + String((e && e.message) || e)) }).finally(function () { setReverting(false) })
       }
