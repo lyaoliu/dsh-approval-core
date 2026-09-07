@@ -932,7 +932,10 @@ export default {
         if (!session) return next()
         let preset
         try {
-          preset = permissionPresets.current(session.events)
+          // rc.1 的 sessionProjections.stateOf 需要 session.header / inheritedEventCount /
+          // snapshotEvents()——只有完整 Session 实例才有；上游 fork 原代码传的 session.events
+          // 在 Session 类上不存在(undefined)，导致 derive 必崩(fail-safe 转人工)。
+          preset = permissionPresets.current(session)
         } catch (error) {
           console.error(`[${NAME}] permissionPresets.current failed`, error)
           audit(`PRESET  current() failed: ${error && error.message}`)
