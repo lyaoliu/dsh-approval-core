@@ -890,14 +890,26 @@ export default {
               const hunk = body.hunk
               const hasHunk = hunk && typeof hunk === 'object' && !Array.isArray(hunk)
                 && (Array.isArray(hunk.delLines) || Array.isArray(hunk.addLines))
+              const pick = (v) => (Array.isArray(v) ? v : []).filter((x) => typeof x === 'string' && x !== '')
+              // 畸形 hunk（传了 hunk 但解析不出任何变更行）→ 400，绝不静默升级为整文件撤销
+              if (hunk !== undefined && hasHunk) {
+                const delCheck = pick(hunk.delLines)
+                const addCheck = pick(hunk.addLines)
+                if (delCheck.length === 0 && addCheck.length === 0) {
+                  return send(res, 400, { ok: false, error: '空改动块：delLines/addLines 均无有效行' })
+                }
+              }
+              if (hunk !== undefined && !hasHunk) {
+                return send(res, 400, { ok: false, error: 'hunk 格式无效（需要 delLines/addLines 数组）' })
+              }
               let content
               if (hasHunk) {
-                const pick = (v) => (Array.isArray(v) ? v : []).filter((x) => typeof x === 'string' && x !== '')
                 const delLines = pick(hunk.delLines).map((l) => '- ' + l).join('\n')
                 const addLines = pick(hunk.addLines).map((l) => '+ ' + l).join('\n')
                 const ctxLines = pick(hunk.ctxLines).slice(0, 3).map((l) => '  ' + l).join('\n')
+                const singlePath = typeof body.path === 'string' && body.path.trim() ? '`' + body.path.trim() + '`' : null
                 content = '请撤销以下自动审批操作中【单个改动块】的文件改动（仅撤销这一块，其余改动一律保留）：\n' +
-                  '- 文件：' + (files || '(未知)') + '\n' +
+                  '- 文件：' + (singlePath || files || '(未知)') + '\n' +
                   (delLines ? '- 恢复这些行（本次改动删除的原文）：\n```\n' + delLines + '\n```\n' : '') +
                   (addLines ? '- 删除这些行（本次改动新增的内容）：\n```\n' + addLines + '\n```\n' : '') +
                   (ctxLines ? '- 定位锚点（上下文行，用于确认改动位置）：\n```\n' + ctxLines + '\n```\n' : '') +

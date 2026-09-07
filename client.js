@@ -365,18 +365,18 @@ window.__ModuleLoader__.load({
       const doRevertHunk = function (h) {
         // 块级撤销：只撤这一个 hunk 的变更（del 行恢复、add 行删除），其余保留
         if (reverting || revertDone) return
-        const delLines = (h.lines || []).filter(function (c) { return c.type === 'del' }).map(function (c) { return c.text })
-        const addLines = (h.lines || []).filter(function (c) { return c.type === 'add' }).map(function (c) { return c.text })
-        const ctxLines = (h.lines || []).filter(function (c) { return c.type === 'same' }).map(function (c) { return c.text }).slice(0, 3)
+        const delLines = (h.lines || []).filter(function (c) { return c.type === 'del' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text })
+        const addLines = (h.lines || []).filter(function (c) { return c.type === 'add' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text })
+        const ctxLines = (h.lines || []).filter(function (c) { return c.type === 'same' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).slice(0, 3)
         if (delLines.length === 0 && addLines.length === 0) return
         setReverting(true)
         setRevertMsg(null)
         fetch('/api/auto-approve/revert', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sessionId: sessionId, eventId: eventId, hunk: { delLines: delLines, addLines: addLines, ctxLines: ctxLines } }),
+          body: JSON.stringify({ sessionId: sessionId, eventId: eventId, path: path, hunk: { delLines: delLines, addLines: addLines, ctxLines: ctxLines } }),
         }).then(function (r) { return r.json() }).then(function (res) {
-          if (res && res.ok) { setRevertMsg('该块的撤销指令已发送'); setRevertDone(true) }
+          if (res && res.ok) { setRevertMsg('已发送该块的撤销指令'); setRevertDone(true) }
           else { setRevertMsg((res && res.error) || '发送失败') }
         }).catch(function (e) { setRevertMsg('发送失败：' + String((e && e.message) || e)) }).finally(function () { setReverting(false) })
       }
