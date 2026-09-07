@@ -327,6 +327,8 @@ window.__ModuleLoader__.load({
       const [revertDone, setRevertDone] = React.useState(false)
       // 已撤销的块(持久态感知)：Set<hunkKey>，初始从 reverts.jsonl 读取
       const [revertedHunks, setRevertedHunks] = React.useState(null) // null=未加载 | Set
+      // 整文件已撤销过？true 时全部块按钮置灰（与服务端 findRevertRecord '*' 互斥一致）
+      const [wholeReverted, setWholeReverted] = React.useState(false)
       const hunkKeyOfLines = function (h) {
         const del = (h.lines || []).filter(function (c) { return c.type === 'del' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).join('\n')
         const add = (h.lines || []).filter(function (c) { return c.type === 'add' && typeof c.text === 'string' && c.text !== '' }).map(function (c) { return c.text }).join('\n')
@@ -345,14 +347,19 @@ window.__ModuleLoader__.load({
             else setError((res && res.error) || '加载 diff 失败')
           })
           .catch(function (e) { setError('加载 diff 失败：' + String((e && e.message) || e)) })
-        // 拉已撤销状态（持久态）：该事件哪些块已撤销过，直接置灰
+        // 拉已撤销状态（持久态）：该事件哪些块已撤销过、整文件是否已撤，直接置灰
         fetch('/api/auto-approve/reverts?eventId=' + eventId, { headers: { 'cache-control': 'no-cache' } })
           .then(function (r) { return r.json() })
           .then(function (res) {
-            if (res && res.ok && Array.isArray(res.hunkKeys)) setRevertedHunks(new Set(res.hunkKeys))
-            else setRevertedHunks(new Set())
+            if (res && res.ok && Array.isArray(res.hunkKeys)) {
+              setRevertedHunks(new Set(res.hunkKeys))
+              setWholeReverted(res.wholeReverted === true)
+            } else {
+              setRevertedHunks(new Set())
+              setWholeReverted(false)
+            }
           })
-          .catch(function () { setRevertedHunks(new Set()) })
+          .catch(function () { setRevertedHunks(new Set()); setWholeReverted(false) })
       }, [eventId, path])
 
       const doRevert = function () {
@@ -369,6 +376,7 @@ window.__ModuleLoader__.load({
           if (res && res.ok) {
             setRevertMsg('撤销指令已发送到对话框，AI 将按指令恢复文件')
             setRevertDone(true)
+            setWholeReverted(true) // 整文件已撤：全部块按钮随之置灰（与服务端互斥一致）
           } else if (res && res.duplicate) {
             // 服务端 409：该撤销已执行过。置 done 防再点，文案如实告知。
             setRevertMsg(res.error || '该撤销已执行过，不再重复投递')
@@ -383,8 +391,10 @@ window.__ModuleLoader__.load({
         })
       }
 
-      // 某块是否已撤销（持久态 + 本面板生命周期）：已撤销的块按钮置灰「已撤销」
+      // 某块是否已撤销（持久态 + 本面板生命周期 + 整文件已撤）：
+      // wholeReverted=true 时所有块视为已撤销（服务端 findRevertRecord 互斥语义一致）
       const isHunkReverted = function (h) {
+        if (wholeReverted) return true
         if (!revertedHunks) return false
         return revertedHunks.has(hunkKeyOfLines(h))
       }
@@ -409,7 +419,7 @@ window.__ModuleLoader__.load({
             const key = 'hunk:' + delLines.join('\n').length + ':' + addLines.join('\n').length + ':' + delLines.join('\n') + '\n' + addLines.join('\n')
             setRevertedHunks(function (prev) { const s = new Set(prev || []); s.add(key); return s })
           }
-          else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递') }
+          else if (res && res.duplicate) { setRevertMsg(res.error || '该块已撤销过，不再重复投递'); setRevertDone(true) }
           else { setRevertMsg((res && res.error) || '发送失败') }
         }).catch(function (e) { setRevertMsg('发送失败：' + String((e && e.message) || e)) }).finally(function () { setReverting(false) })
       }
