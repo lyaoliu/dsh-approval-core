@@ -118,8 +118,8 @@ window.__ModuleLoader__.load({
 .ag-diff-stats-del{color:var(--dsw-alias-state-error-primary)}
 .ag-diff-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 10px;display:flex;flex-direction:column;font-family:var(--ds-font-family-code);font-size:12px;line-height:19px}
 .ag-diff-line{box-sizing:border-box;display:flex;gap:8px;padding:1px 8px;white-space:pre-wrap;word-break:break-all;min-width:0}
-.ag-diff-line-add{background:var(--dsw-alias-state-success-tertiary);color:var(--dsw-alias-state-success-primary)}
-.ag-diff-line-del{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}
+.ag-diff-line-add{background:transparent;color:var(--dsw-alias-state-success-primary)}
+.ag-diff-line-del{background:transparent;color:var(--dsw-alias-state-error-primary)}
 .ag-diff-line-ctx{background:transparent;color:var(--dsw-alias-label-secondary)}
 .ag-diff-line-add .ag-diff-marker{color:var(--dsw-alias-state-success-primary)}
 .ag-diff-line-del .ag-diff-marker{color:var(--dsw-alias-state-error-primary)}
