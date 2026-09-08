@@ -59,6 +59,17 @@ HTTP 接口：
 - `learning.json` — 学习状态（独立于主白名单，可一键清空）
 - `audit.log` — 每次判定的决策审计（DENY/ALLOW/RISKY/OUTCOME/LEARN）
 - `events.jsonl` — 审查 UI 轮询用的事件流（自动放行提示条 + 审批历史视图）
+- `reverts.jsonl` — 已执行撤销的记录（事件 + 块指纹 + 时间），服务端持久去重
+
+## 审查视图与撤销
+
+审批历史视图（会话右侧「审批」tab）提供：
+
+- **文件改动 diff**：点事件的文件 chip 查看红删绿增对比（改动前快照 vs 当前文件）
+- **整文件撤销**：面板底部「撤销此改动」，投递"恢复审批前状态"指令
+- **块级撤销**：每个改动块（hunk）末尾「撤销此块」，只撤该块、其余保留；指令为两步式（删除新增行 / 恢复删除行）+ 定位锚点 + 完成后自查
+- **撤销去重**：`reverts.jsonl` 持久记录已撤销的（事件+块）；重复撤销返回 409 红字提示；已撤销的块重开面板显示「已撤销」置灰不可点
+- **撤销走 AI 执行**（非程序直接写文件）：走正常审批瀑布、留会话痕迹、动手前以锚点核对行号防漂移
 
 ## 与上游 dsh-approval-gate 的差异
 
@@ -67,4 +78,4 @@ HTTP 接口：
 - **学习约束**（方案 B）：阈值默认 5；沉淀必须指纹强命中；学习态独立存储（learning.json）可一键清空；`learning.enabled=false` 时全部转人工。
 - **安全**：v0.2.0 恢复受限版 `POST /api/auto-approve/rules`——写操作必须通过 configRules.mjs 的 classifyOp（四级权限矩阵）+ validateValue 双重服务端校验；硬类别与 classifierModel 不可经 UI 修改。上游的对应 API 无鉴权全开放。
 - **移植上游 0.5.2**：① callId 回溯 tool/call 参数拿结构化文件路径（B 层，diff 审查定位更准）；② 只读命令假快照过滤 + manual-pending 也存快照 + Windows 盘符路径修复（最后一项超出上游的修复）。
-- **测试**：37 个 node:test 用例（danger-patterns 7 / classifier 4 / learning 7 / pipeline 7 / config-rules 12）+ 33 断言 mock 宿主冒烟（含 dataDir 可配场景；本机用 `node test/*.test.mjs` 进程内执行）。
+- **测试**：49 个 node:test 用例（danger-patterns 7 / classifier 4 / learning 7 / pipeline 7 / config-rules 13 / reverse-hunk 5 / revert-key 6）+ 41 断言 mock 宿主冒烟（含 dataDir 可配、结构化路径、拒绝事件快照场景；本机用 `node test/*.test.mjs` 进程内执行）。
