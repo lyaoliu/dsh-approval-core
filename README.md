@@ -79,3 +79,8 @@ HTTP 接口：
 - **安全**：v0.2.0 恢复受限版 `POST /api/auto-approve/rules`——写操作必须通过 configRules.mjs 的 classifyOp（四级权限矩阵）+ validateValue 双重服务端校验；硬类别与 classifierModel 不可经 UI 修改。上游的对应 API 无鉴权全开放。
 - **移植上游 0.5.2**：① callId 回溯 tool/call 参数拿结构化文件路径（B 层，diff 审查定位更准）；② 只读命令假快照过滤 + manual-pending 也存快照 + Windows 盘符路径修复（最后一项超出上游的修复）。
 - **测试**：49 个 node:test 用例（danger-patterns 7 / classifier 4 / learning 7 / pipeline 7 / config-rules 13 / reverse-hunk 5 / revert-key 6）+ 41 断言 mock 宿主冒烟（含 dataDir 可配、结构化路径、拒绝事件快照场景；本机用 `node test/*.test.mjs` 进程内执行）。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。本项目是 [dsh-approval-gate](https://github.com/moon09300731/dsh-approval-gate) 的 fork，
+上游版权归属与改动说明见 [NOTICE](NOTICE) 及上文「与上游 dsh-approval-gate 的差异」。

@@ -9,13 +9,18 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
-  "files": ["src", "client.js", "cordis.patch.yml", "README.md", "LICENSE"],
+  "files": ["src", "client.js", "cordis.patch.yml", "README.md", "LICENSE", "NOTICE"],
   "scripts": {
     "test": "node --test",
     "check": "node --check src/index.mjs && node --check src/danger-patterns.mjs && node --check src/classifier.mjs && node --check src/learning.mjs && node --check src/configRules.mjs && node --check client.js"
   },
   "keywords": ["deepseek-harness", "dsh", "dsh-plugin", "approval", "自动审批"],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lyaoliu/dsh-approval-core.git"
+  },
+  "homepage": "https://github.com/lyaoliu/dsh-approval-core",
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web", "inject": [] }
